@@ -23,6 +23,11 @@ inline uint64_t mod_sub(uint64_t a, uint64_t b, uint64_t q) noexcept {
 // Representatives live in Montgomery form: mont(a) = a * R mod q, R = 2^64.
 // ---------------------------------------------------------------------------
 
+// Generate a prime q with exactly bit_size bits satisfying q ≡ 1 (mod 2N).
+// Searches downward from 2^bit_size - 1 in steps of 2N.
+// Throws std::invalid_argument on bad inputs; std::runtime_error if no prime exists.
+uint64_t generate_proth_prime(uint32_t bit_size, uint32_t N);
+
 struct MontgomeryCtx {
     uint64_t q;      // modulus (odd prime)
     uint64_t q_inv;  // -q^{-1} mod 2^64   (for REDC inner step)

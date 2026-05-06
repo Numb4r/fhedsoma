@@ -1,0 +1,8 @@
+{
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/build"
+    ],
+    "python.autoComplete.extraPaths": [
+        "${workspaceFolder}/build"
+    ]
+}

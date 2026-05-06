@@ -2,6 +2,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/complex.h>
 #include <pybind11/stl.h>
+#include "math_utils.h"
 #include "poly.h"
 #include "ckks_types.h"
 #include "encoder.h"
@@ -39,6 +40,14 @@ static py::array_t<uint64_t> poly_coeffs_view(py::object base) {
 
 PYBIND11_MODULE(ckks_python, m) {
     m.doc() = "CKKS homomorphic encryption for Federated Learning";
+
+    // -------------------------------------------------------------------------
+    // Prime generation utility
+    // -------------------------------------------------------------------------
+    m.def("generate_prime", &generate_proth_prime,
+          py::arg("bit_size"), py::arg("N"),
+          "Return a prime q with exactly bit_size bits satisfying q ≡ 1 (mod 2*N).\n"
+          "Searches downward from 2^bit_size-1. Raises RuntimeError if none found.");
 
     // -------------------------------------------------------------------------
     // Poly
@@ -140,7 +149,22 @@ PYBIND11_MODULE(ckks_python, m) {
                     {static_cast<py::ssize_t>(sizeof(uint64_t))},
                     sk.s.coeffs.data(),
                     self);
-            });
+            })
+        .def("to_bytes",
+            [](const SecretKey& self) -> py::bytes {
+                auto v = self.to_bytes();
+                return py::bytes(reinterpret_cast<const char*>(v.data()),
+                                 v.size());
+            },
+            "Serialize to a Python bytes object (little-endian, self-describing).")
+        .def_static("from_bytes",
+            [](py::bytes b) -> SecretKey {
+                std::string s(b);
+                return SecretKey::from_bytes(
+                    reinterpret_cast<const uint8_t*>(s.data()), s.size());
+            },
+            py::arg("data"),
+            "Deserialize from a Python bytes object.");
 
     // -------------------------------------------------------------------------
     // PublicKey

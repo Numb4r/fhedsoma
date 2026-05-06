@@ -104,3 +104,19 @@ PublicKey PublicKey::from_bytes(const uint8_t* data, std::size_t size) {
         throw std::runtime_error("serialization: trailing bytes in public key");
     return PublicKey(std::move(p0), std::move(p1));
 }
+
+// ─── SecretKey ────────────────────────────────────────────────────────────────
+
+std::vector<uint8_t> SecretKey::to_bytes() const {
+    std::vector<uint8_t> buf;
+    poly_append(buf, s);
+    return buf;
+}
+
+SecretKey SecretKey::from_bytes(const uint8_t* data, std::size_t size) {
+    std::size_t off = 0;
+    Poly p = poly_read(data, size, off);
+    if (off != size)
+        throw std::runtime_error("serialization: trailing bytes in secret key");
+    return SecretKey(std::move(p));
+}

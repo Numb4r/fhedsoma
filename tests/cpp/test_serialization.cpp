@@ -1,17 +1,23 @@
-// test_serialization.cpp — Binary serialization round-trips for Ciphertext and PublicKey.
+// test_serialization.cpp — Binary serialization round-trips for Ciphertext, PublicKey,
+//                          and SecretKey.
 //
 // Checks
 // ──────
-//  1. Ciphertext byte-length               (1 check)
-//  2. Ciphertext round-trip: slot values   (32 × real + 32 × imag = 64 checks)
-//  3. Ciphertext round-trip: decrypt matches original (32 × real checks)
-//  4. PublicKey byte-length                (1 check)
-//  5. PublicKey round-trip: re-encrypt with deserialized pk, decrypt with sk (32 checks)
-//  6. Homomorphic addition survives serialization round-trip (32 checks)
-//  7. Truncation throws                    (1 check)
-//  8. Trailing byte throws                 (1 check)
+//  1.  Ciphertext byte-length                                  (1 check)
+//  2.  Ciphertext round-trip: slot values                      (64 checks)
+//  3.  Ciphertext round-trip: decrypt matches original         (32 checks)
+//  4.  PublicKey byte-length                                   (1 check)
+//  5.  PublicKey round-trip: re-encrypt → decrypt              (32 checks)
+//  6.  Homomorphic addition survives serialization round-trip  (32 checks)
+//  7.  Ciphertext truncation throws                            (1 check)
+//  8.  Ciphertext trailing byte throws                         (1 check)
+//  9.  SecretKey byte-length                                   (1 check)
+// 10.  SecretKey round-trip: coefficients bit-identical        (N checks)
+// 11.  SecretKey round-trip: decrypt ciphertext with new sk    (32 checks)
+// 12.  SecretKey truncation throws                             (1 check)
+// 13.  SecretKey trailing byte throws                          (1 check)
 //
-// Total: ~196 checks
+// Total: ~232 checks (with N=64)
 
 #include "decryptor.h"
 #include "encoder.h"
@@ -56,6 +62,7 @@ static constexpr double   TOL   = 1e-4;
 static constexpr std::size_t POLY_BYTES  = 12 + static_cast<std::size_t>(N) * 8;
 static constexpr std::size_t CT_BYTES    = 2 * POLY_BYTES;
 static constexpr std::size_t PK_BYTES    = 2 * POLY_BYTES;
+static constexpr std::size_t SK_BYTES    = POLY_BYTES;
 
 // ── Infrastructure ─────────────────────────────────────────────────────────────
 struct Ctx {
@@ -193,15 +200,63 @@ static void test_error_handling() {
     CHECK_THROWS(Ciphertext::from_bytes(extended.data(), extended.size()));
 }
 
+// ── Test 9: SecretKey byte length ─────────────────────────────────────────────
+static void test_secretkey_byte_length() {
+    Ctx ctx;
+    CHECK(ctx.sk.to_bytes().size() == SK_BYTES);
+}
+
+// ── Test 10 & 11: SecretKey round-trip ────────────────────────────────────────
+static void test_secretkey_roundtrip() {
+    Ctx ctx;
+
+    // Serialize and deserialize the secret key.
+    const auto sk_bytes   = ctx.sk.to_bytes();
+    const SecretKey sk2   = SecretKey::from_bytes(sk_bytes.data(), sk_bytes.size());
+
+    // Check 10: coefficient-level bit identity.
+    for (uint32_t i = 0; i < N; ++i)
+        CHECK(sk2.s.coeffs[i] == ctx.sk.s.coeffs[i]);
+
+    // Check 11: deserialized sk decrypts a fresh ciphertext correctly.
+    std::vector<double> vals(SLOTS);
+    for (uint32_t i = 0; i < SLOTS; ++i)
+        vals[i] = 0.01 * static_cast<double>(i);
+
+    const Ciphertext ct = encrypt_slots(ctx, vals);
+
+    Decryptor dec2(N, Q, sk2);
+    const auto slots2 = ctx.enc.decode(dec2.decrypt(ct).poly);
+    for (uint32_t i = 0; i < SLOTS; ++i)
+        CHECK(std::abs(slots2[i].real() - vals[i]) < TOL);
+}
+
+// ── Test 12 & 13: SecretKey error handling ────────────────────────────────────
+static void test_secretkey_error_handling() {
+    Ctx ctx;
+    const auto bytes = ctx.sk.to_bytes();
+
+    // Truncation: drop the last byte.
+    CHECK_THROWS(SecretKey::from_bytes(bytes.data(), bytes.size() - 1));
+
+    // Trailing byte: append one extra byte.
+    auto extended = bytes;
+    extended.push_back(0xCD);
+    CHECK_THROWS(SecretKey::from_bytes(extended.data(), extended.size()));
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
-    test_ciphertext_byte_length();   //   1 check
-    test_ciphertext_roundtrip();     //  64 checks
-    test_publickey_byte_length();    //   1 check
-    test_publickey_roundtrip();      //  32 checks
-    test_add_after_roundtrip();      //  32 checks
-    test_error_handling();           //   2 checks
+    test_ciphertext_byte_length();    //   1 check
+    test_ciphertext_roundtrip();      //  64 checks
+    test_publickey_byte_length();     //   1 check
+    test_publickey_roundtrip();       //  32 checks
+    test_add_after_roundtrip();       //  32 checks
+    test_error_handling();            //   2 checks
+    test_secretkey_byte_length();     //   1 check
+    test_secretkey_roundtrip();       //  N + SLOTS checks (64 + 32)
+    test_secretkey_error_handling();  //   2 checks
 
     std::printf("Results: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

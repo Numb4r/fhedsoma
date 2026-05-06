@@ -44,6 +44,11 @@ add_executable(test_fl_aggregation ../test_fl_aggregation.cpp)
 target_link_libraries(test_fl_aggregation PRIVATE ckks_core)
 add_test(NAME test_fl_aggregation COMMAND test_fl_aggregation)
 
+# Prime generation — bit-length, congruence, and primality checks.
+add_executable(test_prime_gen test_prime_gen.cpp)
+target_link_libraries(test_prime_gen PRIVATE ckks_core)
+add_test(NAME test_prime_gen COMMAND test_prime_gen)
+
 # Noise characterisation tool — lives at tests/test_noise.cpp (one level up).
 # Prints the decryption noise infinity norm to stdout; always exits 0.
 add_executable(test_noise ../test_noise.cpp)

@@ -13,9 +13,21 @@
 
 // Secret key: ternary polynomial s ∈ {-1, 0, 1}^N.
 // Coefficients are stored as [0, q) residues: -1 is represented as q-1.
+//
+// Binary wire format (to_bytes / from_bytes):
+//   [s: poly_header || coeffs]
+// where poly_header = [N: uint32 LE (4 B)][q: uint64 LE (8 B)]
+// and each coeff is uint64 LE (8 B).  Total: 12 + N×8 bytes.
 struct SecretKey {
     Poly s;
     explicit SecretKey(Poly s_) : s(std::move(s_)) {}
+
+    // Serialize to a flat byte buffer (little-endian, self-describing).
+    std::vector<uint8_t> to_bytes() const;
+
+    // Deserialize from raw bytes.  Throws std::runtime_error on truncation
+    // or trailing bytes.
+    static SecretKey from_bytes(const uint8_t* data, std::size_t size);
 };
 
 // Public key: pair (pk0, pk1) satisfying  pk0 + pk1·s = e  (mod q)
