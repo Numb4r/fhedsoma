@@ -21,6 +21,7 @@ with Python bindings, optimized for additive HE in FL environments.
 3. **Module 3 — CKKS Core:** Encoder, KeyGenerator, Encryptor, Decryptor.
 4. **Module 4 — FL Ops:** Ciphertext addition, scalar multiplication.
 5. **Module 5 — Python API:** pybind11 wrappers for all public types.
+6. **Module 6 — FL Library:** `ckks_federated` — high-level Python layer for Flower/FL workflows.
 
 ---
 
@@ -43,8 +44,11 @@ cd build && ctest --output-on-failure
 # ── Run the decryption-noise diagnostic (prints infinity norm to stdout) ─────
 cd build && ./tests/cpp/test_noise
 
-# ── Python precision test ────────────────────────────────────────────────────
+# ── Python tests ─────────────────────────────────────────────────────────────
 python tests/test_precision.py
+python tests/python/test_poly.py
+python test_py_ckks_simplifly.py
+python test_py_serialization.py
 ```
 
 ---
@@ -98,6 +102,8 @@ Wire format: `[c0: N u32 LE, q u64 LE, N×u64 LE coeffs][c1: same]` — 2×(12+N
 | Signature | Description |
 |-----------|-------------|
 | `sk.s → np.ndarray[uint64]` | **Zero-copy** read-only view of the ternary secret key polynomial. |
+| `sk.to_bytes() → bytes` | Serialize to a `bytes` object for secure local storage. |
+| `SecretKey.from_bytes(data: bytes) → SecretKey` | Deserialize from disk; raises `RuntimeError` on malformed data. |
 
 #### `ckks_python.PublicKey`
 
@@ -153,9 +159,44 @@ Wire format: same layout as `Ciphertext` — `[pk0 poly][pk1 poly]`.
 
 ---
 
-### C++ only (not exposed to Python)
+### `ckks_federated` — FL high-level library (`ckks_federated/__init__.py`)
 
-#### Low-level / internal API
+High-level Python layer built on top of `ckks_python`. Provides key persistence and
+auto-chunking tensor encryption for Flower / containerised FL workflows.
+
+```python
+from ckks_federated import CKKSContext, CKKSTensor
+```
+
+#### `CKKSContext`
+
+| Signature | Description |
+|-----------|-------------|
+| `CKKSContext(N, bits, scale_bits=40)` | Generate fresh keys. `q` is derived via `generate_prime(bits, N)`. |
+| `CKKSContext.from_keys(N, q, scale, pk_bytes, sk_bytes=None, public_only=False)` | Reconstruct from serialised keys — no new keys generated. |
+| `ctx.save(path)` | Write `params.pkl`, `pk.bin`, and (if sk present) `sk.bin` to `path/`. |
+| `CKKSContext.load(path, public_only=False)` | Load context from disk. `public_only=True` skips SK/Decryptor. |
+| `ctx.__getstate__() / __setstate__()` | Full `pickle` support (including `multiprocessing` and Flower internals). |
+| `ctx.make_public()` | Drop SK and Decryptor in-place (server-side blind mode). |
+| `ctx.export_public_key() → bytes` | Return `pk.to_bytes()`. |
+| `ctx.import_public_key(pk_bytes)` | Replace pk and rebuild Encryptor from bytes. |
+
+#### `CKKSTensor`
+
+Auto-chunking encrypted tensor. Splits arrays larger than N/2 into multiple ciphertexts
+and reassembles on decryption. Carries `original_size` as metadata.
+
+| Signature | Description |
+|-----------|-------------|
+| `CKKSTensor(ctx, data)` | Encrypt a NumPy/TF array, a list of `Ciphertext` objects, or deserialize from a list of `bytes`. |
+| `t.decrypt() → np.ndarray` | Decrypt, concatenate chunks, strip imaginary part, trim to `original_size`. |
+| `t.serialize() → list[bytes]` | Payload for gRPC: `[original_size (8 B)] + [ct.to_bytes() …]`. |
+| `t1 + t2 → CKKSTensor` | Homomorphic addition (new object). |
+| `t1 += t2` | Homomorphic addition in-place (`add_inplace`). |
+
+---
+
+### C++ only (not exposed to Python)
 
 #### Module 1 — Math / NTT (`math_utils.h`, `poly.h`, `ntt.h`)
 
@@ -257,10 +298,19 @@ Wire format: same layout as `Ciphertext` — `[pk0 poly][pk1 poly]`.
 | 5 — Python API | `Evaluator` (`add_inplace`, `add`) | ✅ done |
 | 6 — Serialization | `Ciphertext::to_bytes` / `from_bytes` (C++ + Python) | ✅ done |
 | 6 — Serialization | `PublicKey::to_bytes` / `from_bytes` (C++ + Python) | ✅ done |
+| 6 — Serialization | `SecretKey::to_bytes` / `from_bytes` (C++ + Python) | ✅ done |
+| 7 — FL Library | `CKKSContext` — key generation, `make_public`, `import_public_key` | ✅ done |
+| 7 — FL Library | `CKKSContext.from_keys` — reconstruct from serialised keys | ✅ done |
+| 7 — FL Library | `CKKSContext.save` / `load` — disk persistence (3-file layout) | ✅ done |
+| 7 — FL Library | `CKKSContext.__getstate__` / `__setstate__` — pickle support | ✅ done |
+| 7 — FL Library | `CKKSTensor` — auto-chunking encrypt/decrypt/serialize | ✅ done |
+| 7 — FL Library | `CKKSTensor.__add__` / `__iadd__` — homomorphic addition operators | ✅ done |
 
 ---
 
 ## Test Suite
+
+### C++ (CTest)
 
 All C++ tests are in `tests/cpp/` and registered with CTest. Run with:
 
@@ -280,6 +330,16 @@ cd build && ctest -R test_noise -V           # single suite, verbose
 | `test_keygen` | `tests/cpp/test_keygen.cpp` | Ternary distributions, `pk0 + pk1·s = e` identity (142 checks) |
 | `test_encryption` | `tests/cpp/test_encryption.cpp` | Encrypt/decrypt round-trips, noise bounds, reproducibility (101 checks) |
 | `test_homomorphic_add` | `tests/cpp/test_homomorphic_add.cpp` | Homomorphic addition: slot-level correctness, poly-level noise, commutativity, associativity, modular wrap-around (130 checks) |
-| `test_serialization` | `tests/cpp/test_serialization.cpp` | Ciphertext and PublicKey round-trips, expected byte lengths, homomorphic add after deserialization, truncation and trailing-byte error handling (132 checks) |
+| `test_serialization` | `tests/cpp/test_serialization.cpp` | Ciphertext, PublicKey, and SecretKey round-trips, expected byte lengths, homomorphic add after deserialization, truncation and trailing-byte error handling (231 checks) |
+| `test_prime_gen` | `tests/cpp/test_prime_gen.cpp` | NTT-friendly prime generation: bit size, congruence q ≡ 1 (mod 2N), primality (48 checks) |
 | `test_fl_aggregation` | `tests/test_fl_aggregation.cpp` | FL stress test: 90 clients, Δ=2^40, 90 homomorphic additions, per-slot error < 1e-4; overflow budget check (66 checks) |
 | `test_noise` | `tests/test_noise.cpp` | **Diagnostic:** prints per-coefficient decryption noise and infinity norm to stdout. Not a pass/fail test. |
+
+### Python
+
+| File | What it tests |
+|------|---------------|
+| `tests/python/test_poly.py` | `Poly` Python binding: construction, addition, zero-copy view, setter (10 checks) |
+| `test_py_ckks_simplifly.py` | End-to-end encode → encrypt → decrypt → decode; numerical noise verification |
+| `test_py_serialization.py` | `CKKSContext` save/load, ciphertext serialization, homomorphic add after deserialization (6 checks) |
+| `tests/test_precision.py` | Precision under 10 homomorphic additions; error < 2^-20 margin (1 check) |

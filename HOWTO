@@ -1,0 +1,29 @@
+# HOW TO UPDATE
+
+## CKKS_FEDERATED:
+Modifique o ckks_federated/__init__.py
+
+## Update PIP
+> Update o setup.py
+> zip -r ckks_project.zip . -x "build/*" -x "__pycache__/*" -x "*.bin"
+> Move o .zip para o servidor
+> unzip ckks_project.zip
+> cd ckks_project
+> pip3 install .
+
+# Uso
+## Baixo nivel
+"""
+import ckks_python
+keygen = ckks_python.KeyGenerator(8192, q)
+"""
+
+### Alto nivel
+
+"""
+from ckks_federated import CKKSContext, CKKSTensor
+
+ctx = CKKSContext(N=8192, bits=60)
+tensor = CKKSTensor(ctx, pesos_da_resnet)
+"""
+

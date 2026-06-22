@@ -36,6 +36,47 @@
         "documentation": {}
     },
     {
+        "label": "glob",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "glob",
+        "description": "glob",
+        "detail": "glob",
+        "documentation": {}
+    },
+    {
+        "label": "setup",
+        "importPath": "setuptools",
+        "description": "setuptools",
+        "isExtraImport": true,
+        "detail": "setuptools",
+        "documentation": {}
+    },
+    {
+        "label": "find_packages",
+        "importPath": "setuptools",
+        "description": "setuptools",
+        "isExtraImport": true,
+        "detail": "setuptools",
+        "documentation": {}
+    },
+    {
+        "label": "Pybind11Extension",
+        "importPath": "pybind11.setup_helpers",
+        "description": "pybind11.setup_helpers",
+        "isExtraImport": true,
+        "detail": "pybind11.setup_helpers",
+        "documentation": {}
+    },
+    {
+        "label": "build_ext",
+        "importPath": "pybind11.setup_helpers",
+        "description": "pybind11.setup_helpers",
+        "isExtraImport": true,
+        "detail": "pybind11.setup_helpers",
+        "documentation": {}
+    },
+    {
         "label": "CKKSContext",
         "importPath": "ckks_python_simplify",
         "description": "ckks_python_simplify",
@@ -256,21 +297,21 @@
         "documentation": {}
     },
     {
-        "label": "CKKSContext",
-        "kind": 6,
-        "importPath": "ckks_python_simplify",
-        "description": "ckks_python_simplify",
-        "peekOfCode": "class CKKSContext:\n    \"\"\"\n    Gerenciador de estado criptográfico. \n    Centraliza parâmetros, chaves e instâncias de operação (Encoder, Encryptor, etc.)\n    \"\"\"\n    def __init__(self, N: int, bits: int, scale_bits: int = 40):\n        self.N = N\n        self.bits = bits\n        self.q = ckks_python.generate_prime(bits, N)\n        self.scale = 2**scale_bits",
-        "detail": "ckks_python_simplify",
+        "label": "cpp_files",
+        "kind": 5,
+        "importPath": "setup",
+        "description": "setup",
+        "peekOfCode": "cpp_files = glob.glob(\"src/**/*.cpp\", recursive=True) + [\"bindings/module.cpp\"]\n# Configura o módulo de BAIXO NÍVEL em C++\next_modules = [\n    Pybind11Extension(\n        \"ckks_python\",                     # O nome do módulo compilado (.so)\n        cpp_files,                         # Os arquivos fonte\n        include_dirs=[\"include\"],          # Os arquivos de cabeçalho (.h)\n        cxx_std=17,                        # Padrão rigoroso C++17\n        extra_compile_args=[\"-O3\", \"-march=native\", \"-Wall\"], # Otimização extrema no hardware de destino\n    ),",
+        "detail": "setup",
         "documentation": {}
     },
     {
-        "label": "CKKSTensor",
-        "kind": 6,
-        "importPath": "ckks_python_simplify",
-        "description": "ckks_python_simplify",
-        "peekOfCode": "class CKKSTensor:\n    \"\"\"\n    Representação de um vetor cifrado de alto nível.\n    Sobrescreve operadores matemáticos nativos do Python para usabilidade transparente.\n    \"\"\"\n    def __init__(self, context: CKKSContext, data):\n        self.context = context\n        if isinstance(data, ckks_python.Ciphertext):\n            # Inicialização a partir de um objeto C++ existente\n            self.ciphertext = data",
-        "detail": "ckks_python_simplify",
+        "label": "ext_modules",
+        "kind": 5,
+        "importPath": "setup",
+        "description": "setup",
+        "peekOfCode": "ext_modules = [\n    Pybind11Extension(\n        \"ckks_python\",                     # O nome do módulo compilado (.so)\n        cpp_files,                         # Os arquivos fonte\n        include_dirs=[\"include\"],          # Os arquivos de cabeçalho (.h)\n        cxx_std=17,                        # Padrão rigoroso C++17\n        extra_compile_args=[\"-O3\", \"-march=native\", \"-Wall\"], # Otimização extrema no hardware de destino\n    ),\n]\nsetup(",
+        "detail": "setup",
         "documentation": {}
     },
     {
@@ -278,16 +319,16 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "ctx = CKKSContext(N=8192, bits=60, scale_bits=40)\n# 2. Transforma os pesos da ResNet em um Tensor Cifrado\n# pesos_locais = np.random.uniform(-1, 1, 4096)\npesos_locais = [1,2,3]\ntensor_cifrado_1 = CKKSTensor(ctx, pesos_locais)\ntensor_cifrado_2 = CKKSTensor(ctx, pesos_locais) # Simula outro cliente com pesos diferentes\n# 3. Extrai bytes para enviar pela rede ao Flower\npayload_flower_1 = tensor_cifrado_1.serialize() \npayload_flower_2 = tensor_cifrado_2.serialize()\n# 4. No Servidor, reconstrói os bytes e soma in-place de forma nativa",
+        "peekOfCode": "ctx = CKKSContext(N=8192, bits=62, scale_bits=60)\n# Um array com 10.000 elementos (MAIOR que o limite de 4096)\n# pesos_locais = np.arange(2, dtype=np.float64)\npesos_locais=[1,2] \ntamanho_exato = len(pesos_locais)\n# 1. Cifragem (A classe vai gerar 3 chunks silenciosamente)\ntensor_cifrado_1 = CKKSTensor(ctx, pesos_locais)\ntensor_cifrado_2 = CKKSTensor(ctx, pesos_locais)\n# 2. Rede (Retorna uma lista contendo os 3 bytes de cada chunk)\npayload_flower_1 = tensor_cifrado_1.serialize() ",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
     {
-        "label": "pesos_locais",
+        "label": "tamanho_exato",
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "pesos_locais = [1,2,3]\ntensor_cifrado_1 = CKKSTensor(ctx, pesos_locais)\ntensor_cifrado_2 = CKKSTensor(ctx, pesos_locais) # Simula outro cliente com pesos diferentes\n# 3. Extrai bytes para enviar pela rede ao Flower\npayload_flower_1 = tensor_cifrado_1.serialize() \npayload_flower_2 = tensor_cifrado_2.serialize()\n# 4. No Servidor, reconstrói os bytes e soma in-place de forma nativa\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_3 = tensor_1_servidor + tensor_2_servidor",
+        "peekOfCode": "tamanho_exato = len(pesos_locais)\n# 1. Cifragem (A classe vai gerar 3 chunks silenciosamente)\ntensor_cifrado_1 = CKKSTensor(ctx, pesos_locais)\ntensor_cifrado_2 = CKKSTensor(ctx, pesos_locais)\n# 2. Rede (Retorna uma lista contendo os 3 bytes de cada chunk)\npayload_flower_1 = tensor_cifrado_1.serialize() \npayload_flower_2 = tensor_cifrado_2.serialize()\n# 3. Servidor Flower soma tudo in-place\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
@@ -296,7 +337,7 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "tensor_cifrado_1 = CKKSTensor(ctx, pesos_locais)\ntensor_cifrado_2 = CKKSTensor(ctx, pesos_locais) # Simula outro cliente com pesos diferentes\n# 3. Extrai bytes para enviar pela rede ao Flower\npayload_flower_1 = tensor_cifrado_1.serialize() \npayload_flower_2 = tensor_cifrado_2.serialize()\n# 4. No Servidor, reconstrói os bytes e soma in-place de forma nativa\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_3 = tensor_1_servidor + tensor_2_servidor\npayload_flower_3 = tensor_3.serialize() # Envia de volta para o cliente",
+        "peekOfCode": "tensor_cifrado_1 = CKKSTensor(ctx, pesos_locais)\ntensor_cifrado_2 = CKKSTensor(ctx, pesos_locais)\n# 2. Rede (Retorna uma lista contendo os 3 bytes de cada chunk)\npayload_flower_1 = tensor_cifrado_1.serialize() \npayload_flower_2 = tensor_cifrado_2.serialize()\n# 3. Servidor Flower soma tudo in-place\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_1_servidor += tensor_2_servidor \npayload_flower_3 = tensor_1_servidor.serialize()",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
@@ -305,7 +346,7 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "tensor_cifrado_2 = CKKSTensor(ctx, pesos_locais) # Simula outro cliente com pesos diferentes\n# 3. Extrai bytes para enviar pela rede ao Flower\npayload_flower_1 = tensor_cifrado_1.serialize() \npayload_flower_2 = tensor_cifrado_2.serialize()\n# 4. No Servidor, reconstrói os bytes e soma in-place de forma nativa\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_3 = tensor_1_servidor + tensor_2_servidor\npayload_flower_3 = tensor_3.serialize() # Envia de volta para o cliente\n# No cliente, decifra o resultado",
+        "peekOfCode": "tensor_cifrado_2 = CKKSTensor(ctx, pesos_locais)\n# 2. Rede (Retorna uma lista contendo os 3 bytes de cada chunk)\npayload_flower_1 = tensor_cifrado_1.serialize() \npayload_flower_2 = tensor_cifrado_2.serialize()\n# 3. Servidor Flower soma tudo in-place\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_1_servidor += tensor_2_servidor \npayload_flower_3 = tensor_1_servidor.serialize()\n# 4. Cliente decifra, passando o tamanho exato que o modelo TF espera",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
@@ -314,7 +355,7 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "payload_flower_1 = tensor_cifrado_1.serialize() \npayload_flower_2 = tensor_cifrado_2.serialize()\n# 4. No Servidor, reconstrói os bytes e soma in-place de forma nativa\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_3 = tensor_1_servidor + tensor_2_servidor\npayload_flower_3 = tensor_3.serialize() # Envia de volta para o cliente\n# No cliente, decifra o resultado\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()",
+        "peekOfCode": "payload_flower_1 = tensor_cifrado_1.serialize() \npayload_flower_2 = tensor_cifrado_2.serialize()\n# 3. Servidor Flower soma tudo in-place\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_1_servidor += tensor_2_servidor \npayload_flower_3 = tensor_1_servidor.serialize()\n# 4. Cliente decifra, passando o tamanho exato que o modelo TF espera\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
@@ -323,7 +364,7 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "payload_flower_2 = tensor_cifrado_2.serialize()\n# 4. No Servidor, reconstrói os bytes e soma in-place de forma nativa\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_3 = tensor_1_servidor + tensor_2_servidor\npayload_flower_3 = tensor_3.serialize() # Envia de volta para o cliente\n# No cliente, decifra o resultado\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nprint(\"Resultado da soma homomórfica:\", resultado)",
+        "peekOfCode": "payload_flower_2 = tensor_cifrado_2.serialize()\n# 3. Servidor Flower soma tudo in-place\ntensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_1_servidor += tensor_2_servidor \npayload_flower_3 = tensor_1_servidor.serialize()\n# 4. Cliente decifra, passando o tamanho exato que o modelo TF espera\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nfor i in range(len(resultado)):",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
@@ -332,7 +373,7 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "tensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_3 = tensor_1_servidor + tensor_2_servidor\npayload_flower_3 = tensor_3.serialize() # Envia de volta para o cliente\n# No cliente, decifra o resultado\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nprint(\"Resultado da soma homomórfica:\", resultado)\nfor i in range(len(resultado)):\n    print(f\"Slot {i}: {resultado[i]:.6f} (Esperado: {(pesos_locais[i] + pesos_locais[i]):.6f})\")",
+        "peekOfCode": "tensor_1_servidor = CKKSTensor(ctx, payload_flower_1)\ntensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_1_servidor += tensor_2_servidor \npayload_flower_3 = tensor_1_servidor.serialize()\n# 4. Cliente decifra, passando o tamanho exato que o modelo TF espera\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nfor i in range(len(resultado)):\n    print(resultado[i])  # Deve imprimir 0, 6, 12, ..., 19998\nprint(f\"Tamanho processado perfeitamente: {len(resultado)}\")",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
@@ -341,16 +382,7 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "tensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_3 = tensor_1_servidor + tensor_2_servidor\npayload_flower_3 = tensor_3.serialize() # Envia de volta para o cliente\n# No cliente, decifra o resultado\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nprint(\"Resultado da soma homomórfica:\", resultado)\nfor i in range(len(resultado)):\n    print(f\"Slot {i}: {resultado[i]:.6f} (Esperado: {(pesos_locais[i] + pesos_locais[i]):.6f})\")",
-        "detail": "test_py_ckks_simplifly",
-        "documentation": {}
-    },
-    {
-        "label": "tensor_3",
-        "kind": 5,
-        "importPath": "test_py_ckks_simplifly",
-        "description": "test_py_ckks_simplifly",
-        "peekOfCode": "tensor_3 = tensor_1_servidor + tensor_2_servidor\npayload_flower_3 = tensor_3.serialize() # Envia de volta para o cliente\n# No cliente, decifra o resultado\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nprint(\"Resultado da soma homomórfica:\", resultado)\nfor i in range(len(resultado)):\n    print(f\"Slot {i}: {resultado[i]:.6f} (Esperado: {(pesos_locais[i] + pesos_locais[i]):.6f})\")",
+        "peekOfCode": "tensor_2_servidor = CKKSTensor(ctx, payload_flower_2)\ntensor_1_servidor += tensor_2_servidor \npayload_flower_3 = tensor_1_servidor.serialize()\n# 4. Cliente decifra, passando o tamanho exato que o modelo TF espera\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nfor i in range(len(resultado)):\n    print(resultado[i])  # Deve imprimir 0, 6, 12, ..., 19998\nprint(f\"Tamanho processado perfeitamente: {len(resultado)}\")\nfor i in range(len(resultado)):",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
@@ -359,7 +391,7 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "payload_flower_3 = tensor_3.serialize() # Envia de volta para o cliente\n# No cliente, decifra o resultado\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nprint(\"Resultado da soma homomórfica:\", resultado)\nfor i in range(len(resultado)):\n    print(f\"Slot {i}: {resultado[i]:.6f} (Esperado: {(pesos_locais[i] + pesos_locais[i]):.6f})\")",
+        "peekOfCode": "payload_flower_3 = tensor_1_servidor.serialize()\n# 4. Cliente decifra, passando o tamanho exato que o modelo TF espera\ntensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nfor i in range(len(resultado)):\n    print(resultado[i])  # Deve imprimir 0, 6, 12, ..., 19998\nprint(f\"Tamanho processado perfeitamente: {len(resultado)}\")\nfor i in range(len(resultado)):\n    assert 2*pesos_locais[i] - resultado[i] <= 1e-13, f\"Erro na posição {i}: esperado {2*pesos_locais[i]}, obtido {resultado[i]} : Erro numérico excede o limite de precisão! {2*pesos_locais[i] - resultado[i]} > 1e-14\"\n    print(f\"Ruido numerico na posição {i}: {2*pesos_locais[i] - resultado[i]}\")  # Imprime o ruído numérico para cada elemento",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
@@ -368,7 +400,7 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "tensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nprint(\"Resultado da soma homomórfica:\", resultado)\nfor i in range(len(resultado)):\n    print(f\"Slot {i}: {resultado[i]:.6f} (Esperado: {(pesos_locais[i] + pesos_locais[i]):.6f})\")",
+        "peekOfCode": "tensor_3_cliente = CKKSTensor(ctx, payload_flower_3)\nresultado = tensor_3_cliente.decrypt()\nfor i in range(len(resultado)):\n    print(resultado[i])  # Deve imprimir 0, 6, 12, ..., 19998\nprint(f\"Tamanho processado perfeitamente: {len(resultado)}\")\nfor i in range(len(resultado)):\n    assert 2*pesos_locais[i] - resultado[i] <= 1e-13, f\"Erro na posição {i}: esperado {2*pesos_locais[i]}, obtido {resultado[i]} : Erro numérico excede o limite de precisão! {2*pesos_locais[i] - resultado[i]} > 1e-14\"\n    print(f\"Ruido numerico na posição {i}: {2*pesos_locais[i] - resultado[i]}\")  # Imprime o ruído numérico para cada elemento\n# Saída: Tamanho processado perfeitamente: 10000",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },
@@ -377,7 +409,7 @@
         "kind": 5,
         "importPath": "test_py_ckks_simplifly",
         "description": "test_py_ckks_simplifly",
-        "peekOfCode": "resultado = tensor_3_cliente.decrypt()\nprint(\"Resultado da soma homomórfica:\", resultado)\nfor i in range(len(resultado)):\n    print(f\"Slot {i}: {resultado[i]:.6f} (Esperado: {(pesos_locais[i] + pesos_locais[i]):.6f})\")",
+        "peekOfCode": "resultado = tensor_3_cliente.decrypt()\nfor i in range(len(resultado)):\n    print(resultado[i])  # Deve imprimir 0, 6, 12, ..., 19998\nprint(f\"Tamanho processado perfeitamente: {len(resultado)}\")\nfor i in range(len(resultado)):\n    assert 2*pesos_locais[i] - resultado[i] <= 1e-13, f\"Erro na posição {i}: esperado {2*pesos_locais[i]}, obtido {resultado[i]} : Erro numérico excede o limite de precisão! {2*pesos_locais[i] - resultado[i]} > 1e-14\"\n    print(f\"Ruido numerico na posição {i}: {2*pesos_locais[i] - resultado[i]}\")  # Imprime o ruído numérico para cada elemento\n# Saída: Tamanho processado perfeitamente: 10000",
         "detail": "test_py_ckks_simplifly",
         "documentation": {}
     },

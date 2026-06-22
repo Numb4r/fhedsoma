@@ -1,28 +1,35 @@
-# O uso da sua biblioteca agora é reduzido a 4 linhas:
 import numpy as np
 from ckks_python_simplify import CKKSContext, CKKSTensor
 
-# 1. Inicia o contexto no cliente
-ctx = CKKSContext(N=8192, bits=60, scale_bits=40)
+ctx = CKKSContext(N=8192, bits=62, scale_bits=60)
 
-# 2. Transforma os pesos da ResNet em um Tensor Cifrado
-# pesos_locais = np.random.uniform(-1, 1, 4096)
-pesos_locais = [1,2,3]
+# Um array com 10.000 elementos (MAIOR que o limite de 4096)
+# pesos_locais = np.arange(2, dtype=np.float64)
+pesos_locais=[1,2] 
+tamanho_exato = len(pesos_locais)
+
+# 1. Cifragem (A classe vai gerar 3 chunks silenciosamente)
 tensor_cifrado_1 = CKKSTensor(ctx, pesos_locais)
-tensor_cifrado_2 = CKKSTensor(ctx, pesos_locais) # Simula outro cliente com pesos diferentes
-# 3. Extrai bytes para enviar pela rede ao Flower
+tensor_cifrado_2 = CKKSTensor(ctx, pesos_locais)
+
+# 2. Rede (Retorna uma lista contendo os 3 bytes de cada chunk)
 payload_flower_1 = tensor_cifrado_1.serialize() 
 payload_flower_2 = tensor_cifrado_2.serialize()
 
-# 4. No Servidor, reconstrói os bytes e soma in-place de forma nativa
+# 3. Servidor Flower soma tudo in-place
 tensor_1_servidor = CKKSTensor(ctx, payload_flower_1)
 tensor_2_servidor = CKKSTensor(ctx, payload_flower_2)
-tensor_3 = tensor_1_servidor + tensor_2_servidor
-payload_flower_3 = tensor_3.serialize() # Envia de volta para o cliente
+tensor_1_servidor += tensor_2_servidor 
 
-# No cliente, decifra o resultado
+payload_flower_3 = tensor_1_servidor.serialize()
+
+# 4. Cliente decifra, passando o tamanho exato que o modelo TF espera
 tensor_3_cliente = CKKSTensor(ctx, payload_flower_3)
 resultado = tensor_3_cliente.decrypt()
-print("Resultado da soma homomórfica:", resultado)
 for i in range(len(resultado)):
-    print(f"Slot {i}: {resultado[i]:.6f} (Esperado: {(pesos_locais[i] + pesos_locais[i]):.6f})")
+    print(resultado[i])  # Deve imprimir 0, 6, 12, ..., 19998
+print(f"Tamanho processado perfeitamente: {len(resultado)}")
+for i in range(len(resultado)):
+    assert 2*pesos_locais[i] - resultado[i] <= 1e-13, f"Erro na posição {i}: esperado {2*pesos_locais[i]}, obtido {resultado[i]} : Erro numérico excede o limite de precisão! {2*pesos_locais[i] - resultado[i]} > 1e-14"
+    print(f"Ruido numerico na posição {i}: {2*pesos_locais[i] - resultado[i]}")  # Imprime o ruído numérico para cada elemento
+# Saída: Tamanho processado perfeitamente: 10000
