@@ -1,0 +1,400 @@
+% =============================================================================
+% Implementação de Baixo Nível da Biblioteca CKKS — versão resumida (5–6 pág.)
+% Compilar: pdflatex dissertacao_baixo_nivel_resumido.tex  (2 passagens)
+% =============================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, calc, decorations.pathreplacing,
+                shapes.geometric}
+
+\usepackage{booktabs}
+\usepackage[a4paper, top=2.5cm, bottom=2.5cm, left=2.8cm, right=2.8cm]{geometry}
+
+\usepackage[colorlinks=true, allcolors=blue,
+            pdfauthor={Yuri Dimitre Dias de Faria},
+            pdftitle={Implementação de Baixo Nível da Biblioteca CKKS -- resumo}]{hyperref}
+\usepackage[brazilian, nameinlink]{cleveref}
+
+\newtheorem{definition}{Definição}
+
+\newcommand{\Rq}{\mathcal{R}_q}
+
+% Títulos das seções em português
+\renewcommand\abstractname{Resumo}
+
+% =============================================================================
+\begin{document}
+
+\title{\textbf{Implementação de Baixo Nível da Biblioteca CKKS\\
+para Aprendizado Federado Preservador de Privacidade}\\[0.4em]
+\large Síntese técnica}
+\author{Yuri Dimitre Dias de Faria\\
+\small Instituto de Computação -- UNICAMP\\
+\small Orientador: Prof. Dr. Allan Mariano de Souza}
+\date{Junho de 2026}
+\maketitle
+
+% =============================================================================
+\section{Introdução}
+\label{sec:intro}
+% =============================================================================
+
+Este documento sintetiza a arquitetura de baixo nível do \emph{backend} C++ da
+biblioteca CKKS customizada, desenvolvida para suportar operações de cifragem
+homomórfica em cenários de Aprendizado Federado (FL). O material pressupõe
+familiaridade com o pano de fundo do esquema CKKS, com o modelo de erro da
+agregação homomórfica e com o problema RLWE, cobertos no Capítulo~4 da dissertação
+associada~\cite{Cheon2017,sealmanual}; o foco aqui é a tradução dessas estruturas
+matemáticas em código executável de alto desempenho.
+
+O núcleo da biblioteca, denominado \texttt{ckks\_core}, é implementado em C++17 e
+organizado em seis módulos hierárquicos (\cref{tab:modulos}). Todas as unidades de
+tradução são compiladas para uma biblioteca estática com as diretivas
+\texttt{-O3 -march=native -ffast-math -fopenmp-simd}.
+
+\begin{table}[ht]
+\centering
+\caption{Módulos do núcleo \texttt{ckks\_core}.}
+\label{tab:modulos}
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Módulo} & \textbf{Arquivos principais} & \textbf{Responsabilidade} \\
+\midrule
+1 – Aritmética & \texttt{math\_utils.h/.cpp} & \texttt{mod\_add/sub}, Montgomery, primos NTT \\
+2 – Polinômio  & \texttt{poly.h/.cpp}        & Tipo \texttt{Poly}, adição vetorizada \\
+3 – NTT        & \texttt{ntt.h/.cpp}         & Transformada negacíclica $O(N\log N)$ \\
+4 – Amostragem & \texttt{sampler.h/.cpp}     & Gaussiana discreta, distribuições ternárias \\
+5 – Chaves/Cifragem & \texttt{keygen.h}, \texttt{ckks\_core.cpp} & Geração de chaves, \texttt{encrypt}, \texttt{decrypt} \\
+6 – Avaliação  & \texttt{evaluator.h/.cpp}, \texttt{encoder.h/.cpp}, \texttt{serialization.cpp} & Adição, codificação, serialização \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Em contraste com implementações de propósito geral como Microsoft
+SEAL~\cite{sealmanual}, o \texttt{ckks\_core} adota duas simplificações intencionais,
+motivadas pelo foco exclusivo em agregação federada: (i)~utiliza um \textbf{único primo
+NTT} $q \equiv 1 \pmod{2N}$, com $q < 2^{62}$, em lugar da cadeia RNS
+$Q = \prod_j q_j$ do modelo completo discutido no Capítulo~4; (ii)~opera em
+\textbf{regime somente-aditivo}, sem \emph{rescaling}, relinearização, chaves de Galois
+nem \emph{bootstrapping}. O orçamento de ruído, portanto, não decresce ao longo das
+rodadas de agregação.
+
+% =============================================================================
+\section{Aritmética Modular e Redução de Montgomery}
+\label{sec:arithmetic}
+% =============================================================================
+
+\paragraph{Anel de polinômios.}
+A biblioteca opera sobre o anel quociente
+\begin{equation}
+  \Rq = \mathbb{Z}_q[X]\,/\,(X^N+1),
+  \label{eq:ring}
+\end{equation}
+onde $q$ é um primo e $N$ é uma potência de dois. A relação $X^N \equiv -1
+\pmod{X^N+1}$ confere ao anel estrutura negacíclica: o produto de polinômios é
+reduzido módulo $X^N+1$ implicitamente pela NTT, descrita na \cref{sec:ntt}.
+
+\paragraph{Aritmética sem desvios condicionais.}
+Adição e subtração modulares são implementadas sem desvios (\emph{branchless})
+por meio do truque da máscara binária. Para $a, b \in [0,q)$:
+\[
+  \texttt{mod\_add}(a,b,q) = (a+b) - \bigl(q \;\mathbin{\&}\; -(a+b \geq q)\bigr),
+\]
+onde a negação do resultado booleano em 64 bits produz a máscara $0$ ou
+$2^{64}-1$. A subtração \texttt{mod\_sub} usa raciocínio simétrico. Ambas são
+declaradas \texttt{inline noexcept} e mapeiam diretamente a instruções AVX2
+(\texttt{vpsubq}/\texttt{vpcmpgtq}/\texttt{vpand}) sob \texttt{-march=native}.
+
+\paragraph{Redução de Montgomery.}
+Multiplicações modulares no caminho crítico (borboletas NTT, cifragem) empregam
+a redução de Montgomery~\cite{Montgomery1985} com $R = 2^{64}$. Cada elemento
+$a \in \mathbb{Z}_q$ é representado na \emph{forma de Montgomery}
+$\hat{a} = a \cdot R \bmod q$; a multiplicação
+$\widehat{a \cdot b} = \texttt{REDC}(\hat{a} \cdot \hat{b})$ nunca realiza divisão
+por $q$, substituindo-a por um deslocamento de 64 bits e uma adição. As três
+constantes do contexto \texttt{MontgomeryCtx} ($q_{\text{inv}} = -q^{-1} \bmod 2^{64}$,
+$r_2 = R^2 \bmod q$ e $q$) são pré-computadas uma única vez por par $(N, q)$.
+O valor $q_{\text{inv}}$ é obtido por cinco iterações de Newton $x \leftarrow x(2-qx)$
+sobre $\mathbb{Z}/2^{64}\mathbb{Z}$; o valor $r_2$ via redução de 128 bits. A
+\cref{fig:montgomery_flow} ilustra o padrão de uso: as conversões ocorrem uma única
+vez para cada conjunto de operandos, enquanto as multiplicações intermediárias
+permanecem inteiramente no domínio de Montgomery.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  node distance = 0.5cm and 1.3cm,
+  box/.style  = {draw, rounded corners=3pt, minimum width=2.5cm, minimum height=0.65cm,
+                 align=center, font=\small},
+  io/.style   = {draw, ellipse, minimum width=1.8cm, minimum height=0.65cm,
+                 align=center, font=\small},
+  arr/.style  = {-{Stealth[length=5pt]}, thick}
+]
+  \node[io]  (a)  {$a \in \mathbb{Z}_q$};
+  \node[io,  below=0.7cm of a] (b) {$b \in \mathbb{Z}_q$};
+  \node[box, right=1.2cm of a]  (am)  {$\hat{a}=aR\bmod q$};
+  \node[box, right=1.2cm of b]  (bm)  {$\hat{b}=bR\bmod q$};
+  \node[box, right=1.2cm of am, yshift=-0.67cm] (mul) {\texttt{mont\_mul}\\$\hat{a}\cdot\hat{b}$};
+  \node[box, right=1.2cm of mul] (res) {$\widehat{ab}$};
+  \node[io,  right=1.1cm of res] (out) {$ab\in\mathbb{Z}_q$};
+  \draw[arr] (a)   -- node[above,font=\footnotesize]{\texttt{to\_mont}}   (am);
+  \draw[arr] (b)   -- node[below,font=\footnotesize]{\texttt{to\_mont}}   (bm);
+  \draw[arr] (am) |- (mul);
+  \draw[arr] (bm) |- (mul);
+  \draw[arr] (mul) -- node[above,font=\footnotesize]{REDC}                (res);
+  \draw[arr] (res) -- node[above,font=\footnotesize]{\texttt{from\_mont}} (out);
+\end{tikzpicture}
+\caption{Fluxo de uso do domínio de Montgomery. Conversões ocorrem uma única vez;
+multiplicações intermediárias usam \texttt{mont\_mul} sem divisão por $q$.}
+\label{fig:montgomery_flow}
+\end{figure}
+
+\paragraph{Geração de primos NTT-amigáveis.}
+A função \texttt{generate\_proth\_prime(bit\_size, N)} encontra o maior primo da forma
+$q = 2Nk+1$ com exatamente \texttt{bit\_size} bits ($\leq 62$), garantindo
+$q \equiv 1 \pmod{2N}$ e $q < 2^{62}$. A busca é descendente em passos de $2N$; cada
+candidato é submetido ao teste de Miller--Rabin determinístico com 12 testemunhas fixas,
+suficientes para cobrir todo o intervalo $[0, 2^{62})$ sem falsos
+positivos~\cite{Pomerance1980}.
+
+% =============================================================================
+\section{Transformada Numérica Teórica Negacíclica}
+\label{sec:ntt}
+% =============================================================================
+
+A multiplicação de polinômios em $\Rq$ domina o custo computacional da cifragem e da
+decifragem. A Transformada Numérica Teórica (NTT) reduz a complexidade de $O(N^2)$
+para $O(N\log N)$~\cite{LongaNaehrig2016}. A variante \emph{negacíclica} avalia os
+polinômios nas $N$ raízes primitivas $2N$-ésimas da unidade
+$\psi, \psi^3, \ldots, \psi^{2N-1}$, onde $\psi^N \equiv -1 \pmod{q}$, tornando a
+redução módulo $X^N+1$ implícita ao algoritmo.
+
+O contexto \texttt{NttCtx} é construído uma única vez por par $(N, q)$ e armazena:
+(i)~a raiz $\psi = g^{(q-1)/(2N)} \bmod q$, derivada da menor raiz primitiva $g$ de
+$\mathbb{Z}_q^*$; (ii)~duas tabelas de $N$ \emph{twiddle factors}
+$\texttt{psi\_pow}[k] = \texttt{to\_mont}(\psi^{\text{bit\_rev}(k)})$ e
+$\texttt{psi\_inv\_pow}[k]$, geradas por multiplicação sequencial de Montgomery e
+armazenadas em \textbf{ordem bit-reversa} para acesso linear sequencial durante as
+borboletas; (iii)~o escalar $N_{\text{inv}}^{\text{mont}} = \texttt{to\_mont}(N^{-1}
+\bmod q)$, usado na normalização da NTT inversa.
+
+A NTT direta (Cooley--Tukey DIT) processa $\log_2 N$ estágios com $m$ crescente,
+aplicando o fator de giro \emph{antes} de cada soma/diferença. A NTT inversa
+(Gentleman--Sande DIF) processa os estágios com $m$ decrescente, aplica o fator
+inverso \emph{após} a soma/diferença e normaliza todos os coeficientes por
+$N_{\text{inv}}^{\text{mont}}$ ao final. Os dois algoritmos formam um par exato:
+nenhuma permutação adicional é necessária após a NTT inversa. Os ponteiros
+\texttt{\_\_restrict\_\_} nos laços internos informam ao compilador a ausência de
+aliasing, favorecendo a vetorização automática.
+
+A multiplicação polinomial \texttt{poly\_ntt\_mul} aplica a NTT direta a cada operando,
+multiplica ponto a ponto usando aritmética de 128 bits (os resíduos de saída da NTT
+estão em forma normal, não de Montgomery) e aplica a NTT inversa ao resultado, com
+complexidade total $O(N\log N)$.
+
+% =============================================================================
+\section{Geração de Chaves, Cifragem e Decifragem}
+\label{sec:crypto}
+% =============================================================================
+
+\paragraph{Amostragem.}
+A classe \texttt{Sampler} encapsula um gerador Mersenne Twister de 64 bits
+(\texttt{mt19937\_64}), não copiável. Três distribuições são fornecidas: uniforme em
+$[0, q)$; gaussiana discreta $D_{\mathbb{Z},\sigma}$ com rejeição de amostras além de
+$6\sigma$ (probabilidade de rejeição $< 2 \times 10^{-9}$ por coeficiente, $\sigma =
+3{,}2$); e ternária em $\{-1, 0, 1\}$, com variante de peso de Hamming fixo por
+Fisher--Yates parcial.
+
+\paragraph{Geração de chaves.}
+O esquema de chaves segue o paradigma RLWE~\cite{LPR2010}. A chave secreta $s$ é um
+polinômio ternário com coeficientes em $\{0, 1, q{-}1\}$. A chave pública é o par
+$(p_0, p_1) \in \Rq^2$ construído como $p_1 = a$ (uniforme) e $p_0 = e - a \cdot s$,
+onde $e$ é um ruído gaussiano pequeno. A invariante resultante
+\begin{equation}
+  p_0 + p_1 \cdot s = e \pmod{q}
+  \label{eq:pk}
+\end{equation}
+é a base da segurança RLWE: conhecendo apenas $(p_0, p_1)$, recuperar $s$ é
+computacionalmente inviável.
+
+\paragraph{Cifragem.}
+Dado um texto claro $m \in \Rq$ (um polinômio de coeficientes inteiros, produzido pelo
+codificador canônico), a cifragem sorteia um polinômio efêmero $u$ (ternário) e dois
+ruídos $e_0, e_1$ (gaussianos) frescos a cada chamada, e calcula
+\begin{equation}
+  c_1 = p_1 u + e_1, \qquad c_0 = p_0 u + e_0 + m.
+  \label{eq:enc}
+\end{equation}
+As duas multiplicações polinomiais em~\eqref{eq:enc} são realizadas por
+\texttt{poly\_ntt\_mul}; as somas são coeficiente a coeficiente com \texttt{mod\_add}.
+
+\paragraph{Decifragem.}
+A decifragem computa simplesmente
+\begin{equation}
+  m' = c_0 + c_1 \cdot s \pmod{q}.
+  \label{eq:dec}
+\end{equation}
+Substituindo~\eqref{eq:enc} em~\eqref{eq:dec} e usando a invariante~\eqref{eq:pk}:
+\[
+  m' = m + \underbrace{u \cdot e_{\text{chave}} + e_0 + e_1 s}_{\varepsilon},
+\]
+onde o termo de erro $\varepsilon$ tem coeficientes limitados em norma infinita por
+$\approx 2N \cdot 6\sigma \ll q/2$, garantindo recuperação correta de $m$ após
+decodificação por $\Delta$. A \cref{fig:pipeline} resume o fluxo completo de cifragem,
+agregação e decifragem.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  node distance = 0.35cm and 0.75cm,
+  box/.style = {draw, rounded corners=3pt, minimum width=2.2cm, minimum height=0.65cm,
+                align=center, font=\small},
+  io/.style  = {draw, ellipse, minimum width=1.7cm, minimum height=0.65cm,
+                align=center, font=\small},
+  arr/.style = {-{Stealth[length=5pt]}, thick},
+  sub/.style = {font=\scriptsize, text=gray}
+]
+  \node[io]  (m)   {$m^{(k)}\!\in\!\Rq$};
+  \node[box, right=0.65cm of m]   (enc)  {\texttt{encrypt}\\$(p_0,p_1,u,e_0,e_1)$};
+  \node[io,  right=0.65cm of enc] (ct)   {$(c_0^{(k)},c_1^{(k)})$};
+  \node[box, right=0.65cm of ct]  (add)  {\texttt{add\_inplace}\\$k=1,\ldots,K$};
+  \node[io,  right=0.65cm of add] (cta)  {$(c_0',c_1')$};
+  \node[box, right=0.65cm of cta] (dec)  {\texttt{decrypt}\\$c_0'+c_1' s$};
+  \node[io,  right=0.65cm of dec] (m2)   {$m'\!\approx\!\sum m^{(k)}$};
+  \draw[arr] (m)   -- (enc);
+  \draw[arr] (enc) -- (ct);
+  \draw[arr] (ct)  -- (add);
+  \draw[arr] (add) -- (cta);
+  \draw[arr] (cta) -- (dec);
+  \draw[arr] (dec) -- (m2);
+  \node[sub, below=0.1cm of enc] {2$\times$ NTT-mul};
+  \node[sub, below=0.1cm of add] {$2N$ \texttt{mod\_add}};
+  \node[sub, below=0.1cm of dec] {1$\times$ NTT-mul};
+\end{tikzpicture}
+\caption{Pipeline de cifragem, agregação homomórfica de $K$ clientes e decifragem.
+As operações dominantes são as multiplicações polinomiais via NTT ($O(N\log N)$ cada).}
+\label{fig:pipeline}
+\end{figure}
+
+% =============================================================================
+\section{Avaliação Homomórfica e Codificação Canônica}
+\label{sec:eval_enc}
+% =============================================================================
+
+\paragraph{Adição homomórfica.}
+A classe \texttt{Evaluator} é sem estado além dos parâmetros $(N,q)$. O método
+\texttt{add\_inplace} realiza a adição coeficiente a coeficiente de $c_0$ e de $c_1$
+de dois textos cifrados com mesmo $(N,q)$, usando dois laços de \texttt{mod\_add}
+anotados com \texttt{\#pragma omp simd}, que sob \texttt{-fopenmp-simd} emitem
+instruções AVX2 vetoriais sem acionar o \emph{runtime} de \emph{threads} OpenMP. A
+correção é imediata pela linearidade:
+\[
+  (c_0^{(1)}\!+c_0^{(2)}) + (c_1^{(1)}\!+c_1^{(2)})\cdot s
+  = (c_0^{(1)}\!+c_1^{(1)}s) + (c_0^{(2)}\!+c_1^{(2)}s) \approx m_1 + m_2.
+\]
+O ruído acumulado após $K$ adições de textos independentes cresce em norma RMS como
+$\sqrt{K}\,\sigma_e$, produzindo erro por \emph{slot}
+\begin{equation}
+  \varepsilon_K \approx \frac{\sqrt{K}\,\sigma_e}{\Delta},
+  \label{eq:noise}
+\end{equation}
+que coincide com a expressão $\sqrt{K}\cdot e/\Delta$ da análise de agregação do
+Capítulo~4 da dissertação.
+
+\paragraph{Codificação canônica CKKS.}
+O codificador implementa o mapa de imersão canônica $\sigma$~\cite{Cheon2017}: um vetor
+de $N/2$ valores complexos (os \emph{slots}) é associado a um polinômio de $\Rq$ por
+avaliação nas $N$ raízes primitivas $2N$-ésimas $\omega_j = e^{i\pi(2j+1)/N}$. A
+simetria hermitiana $\omega_{N-1-j} = \overline{\omega_j}$ garante que os coeficientes
+do polinômio resultante sejam reais. Na codificação ($\sigma^{-1}$), o vetor de slots é
+simetrizado, submetido a uma FFT de Cooley--Tukey radix-2 in-place, torcido por
+$e^{-i\pi k/N}$, multiplicado pela escala $\Delta$ e arredondado para inteiros em
+$[0,q)$. Na decodificação ($\sigma$), os coeficientes são centralizados em
+$(-q/2,\,q/2]$, divididos por $\Delta$, torcidos por $e^{i\pi k/N}$ e submetidos à
+IFFT. O erro de quantização por \emph{slot} é $\sim N/(2\Delta)$.
+
+% =============================================================================
+\section{Serialização, Compilação e Síntese}
+\label{sec:serial_build}
+% =============================================================================
+
+\paragraph{Serialização.}
+O módulo de serialização adota um formato binário \emph{little-endian} auto-descritivo.
+A unidade atômica é a representação de um polinômio:
+$[\,N\text{: u32, 4\,B}\,]\;[\,q\text{: u64, 8\,B}\,]\;[\,N \times\text{u64, }8N\text{\,B}\,]$,
+totalizando $12 + 8N$ bytes. Um \texttt{Ciphertext} ou uma \texttt{PublicKey} consistem
+em dois desses blocos ($2(12+8N)$ bytes); uma \texttt{SecretKey} consiste em um único
+bloco ($12+8N$ bytes). Cada polinômio carrega seu próprio $N$ e $q$, permitindo
+validação completa de integridade na desserialização: tamanho do \emph{buffer},
+concordância de $(N,q)$ e ausência de bytes residuais.
+
+\paragraph{Compilação e vetorização.}
+O núcleo \texttt{ckks\_core} é compilado como biblioteca estática com código independente
+de posição (\texttt{-fPIC}). As diretivas de compilação são: \texttt{-O3} (otimizações
+agressivas), \texttt{-march=native} (instruções AVX2), \texttt{-ffast-math}
+(otimizações de ponto flutuante, utilizadas principalmente pelo codificador) e
+\texttt{-fopenmp-simd} (ativa \texttt{\#pragma omp simd} sem o \emph{runtime} de
+\emph{threads} OpenMP, reservado para paralelização futura da NTT). Existe uma
+divergência entre os dois caminhos de construção: o \texttt{setup.py} (modo
+\emph{pip}) usa apenas \texttt{-O3 -march=native -Wall}, omitindo
+\texttt{-ffast-math} e \texttt{-fopenmp-simd}.
+
+\paragraph{Síntese e trabalhos futuros.}
+Os três pilares técnicos do \texttt{ckks\_core} são: (i)~redução de Montgomery, que
+elimina divisões do caminho crítico; (ii)~NTT negacíclica $O(N\log N)$ com tabelas de
+twiddle pré-computadas em ordem bit-reversa e em forma de Montgomery; e (iii)~aritmética
+modular sem desvios condicionais, que viabiliza a vetorização AVX2. As simplificações
+de projeto (primo único, regime somente-aditivo) mantêm a implementação concisa sem
+comprometer a correção para o caso de uso alvo: agregação federada de gradientes por
+adição homomórfica. Os trabalhos futuros imediatos incluem a paralelização por
+\emph{threads} dos laços da NTT, a substituição da multiplicação escolar $O(N^2)$ de
+\texttt{mul\_plain} por \texttt{poly\_ntt\_mul}, e a extensão para cadeia RNS com
+\emph{rescaling}, habilitando profundidade multiplicativa para circuitos de FL mais
+complexos.
+
+% =============================================================================
+\begin{thebibliography}{9}
+
+\bibitem{Cheon2017}
+J.~H. Cheon, A.~Kim, M.~Kim, e Y.~Song,
+``Homomorphic encryption for arithmetic of approximate numbers,''
+em \emph{ASIACRYPT 2017}, LNCS vol.~10624, Springer, pp.~409--437.
+
+\bibitem{Montgomery1985}
+P.~L. Montgomery,
+``Modular multiplication without trial division,''
+\emph{Mathematics of Computation}, vol.~44, n.~170, pp.~519--521, 1985.
+
+\bibitem{LongaNaehrig2016}
+P.~Longa e M.~Naehrig,
+``Speeding up the number theoretic transform for faster ideal lattice-based cryptography,''
+em \emph{CANS 2016}, LNCS vol.~10052, Springer, pp.~124--139.
+
+\bibitem{LPR2010}
+V.~Lyubashevsky, C.~Peikert, e O.~Regev,
+``On ideal lattices and learning with errors over rings,''
+em \emph{EUROCRYPT 2010}, LNCS vol.~6110, Springer, pp.~1--23.
+
+\bibitem{sealmanual}
+Microsoft Research,
+\emph{SEAL: Simple Encrypted Arithmetic Library -- Manual}, v.~4.1, 2023.
+\url{https://github.com/microsoft/SEAL}
+
+\bibitem{Pomerance1980}
+C.~Pomerance, J.~L. Selfridge, e S.~S. Wagstaff~Jr.,
+``The pseudoprimes to $25\cdot10^9$,''
+\emph{Mathematics of Computation}, vol.~35, n.~151, pp.~1003--1026, 1980.
+
+\end{thebibliography}
+
+\end{document}

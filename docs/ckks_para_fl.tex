@@ -1,0 +1,380 @@
+% =============================================================================
+% CKKS para Aprendizado Federado — guia acessível para praticantes de FL
+% Público-alvo: pesquisadores de FL sem conhecimento prévio de HE.
+% Compilar: pdflatex ckks_para_fl.tex  (2 passagens)
+% =============================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, calc, decorations.pathreplacing,
+                shapes.geometric, fit, backgrounds}
+
+\usepackage{booktabs}
+\usepackage[a4paper, top=2.5cm, bottom=2.5cm, left=2.8cm, right=2.8cm]{geometry}
+
+\usepackage[colorlinks=true, allcolors=blue,
+            pdfauthor={Yuri Dimitre Dias de Faria},
+            pdftitle={CKKS para Aprendizado Federado}]{hyperref}
+\usepackage[brazilian, nameinlink]{cleveref}
+
+\newtheorem{definition}{Definição}
+
+% =============================================================================
+\begin{document}
+
+\title{\textbf{Criptografia Homomórfica CKKS\\
+para Aprendizado Federado Preservador de Privacidade}\\[0.4em]
+\large Guia conceitual para praticantes de FL}
+\author{Yuri Dimitre Dias de Faria\\
+\small Instituto de Computação -- UNICAMP\\
+\small Orientador: Prof. Dr. Allan Mariano de Souza}
+\date{Junho de 2026}
+\maketitle
+
+% =============================================================================
+\section{O problema: privacidade na agregação federada}
+\label{sec:problema}
+% =============================================================================
+
+No Aprendizado Federado (FL), um servidor central coordena o treinamento de um
+modelo global sem coletar os dados brutos dos clientes. Cada cliente $k$ computa
+um gradiente $g_k$ sobre seus dados locais e o transmite para o servidor, que
+agrega as atualizações e devolve o novo modelo. O pressuposto de privacidade é que
+apenas os gradientes, e não os dados de treinamento, saem dos dispositivos.
+
+Esse pressuposto é fraco. Ataques de inversão de gradiente~\cite{Geiping2020}
+reconstroem imagens de entrada com alta fidelidade a partir de $g_k$. Ataques de
+inferência de pertença~\cite{Shokri2017} determinam se um exemplo específico
+participou do treinamento. Em aplicações médicas, financeiras ou governamentais,
+onde a lei exige proteção dos dados individuais, expor os gradientes ao servidor é
+juridicamente problemático mesmo quando o servidor é considerado honesto.
+
+A Criptografia Homomórfica (HE) elimina esse vetor de ataque: os clientes enviam
+\emph{gradientes cifrados}, o servidor agrega matematicamente sem acessar os valores,
+e apenas o detentor da chave secreta decifra o resultado final. A propriedade
+fundamental que torna isso possível é o \textbf{homomorfismo}: a soma dos textos
+cifrados, ao ser decifrada, produz a soma dos textos claros correspondentes,
+sem que o servidor precise de qualquer chave.
+
+% =============================================================================
+\section{Criptografia Homomórfica: o essencial em uma página}
+\label{sec:he_basico}
+% =============================================================================
+
+\paragraph{Texto claro, texto cifrado e par de chaves.}
+Um esquema de criptografia homomórfica define três objetos fundamentais. O
+\textbf{texto claro} (plaintext) é o dado original, por exemplo o vetor de
+gradientes $g_k \in \mathbb{R}^d$. O \textbf{texto cifrado} (ciphertext) é uma
+representação cifrada de $g_k$, legível apenas por quem detém a chave secreta. O
+\textbf{par de chaves} consiste em uma chave pública $\text{pk}$, que qualquer
+cliente usa para cifrar, e uma chave secreta $\text{sk}$, que apenas a entidade de
+confiança mantém para decifrar. A assimetria é a garantia de privacidade: clientes
+cifram com $\text{pk}$, o servidor manipula textos cifrados, e apenas o detentor de
+$\text{sk}$ vê os valores.
+
+\paragraph{O homomorfismo aditivo.}
+A propriedade central para FL é a \textbf{adição homomórfica}: dado um operador de
+adição $\oplus$ sobre textos cifrados,
+\begin{equation}
+  \mathrm{Dec}\!\left(\mathrm{Enc}(g_1) \oplus \mathrm{Enc}(g_2)\right)
+  \approx g_1 + g_2,
+  \label{eq:homo_add}
+\end{equation}
+onde $\mathrm{Enc}$ e $\mathrm{Dec}$ são as operações de cifragem e decifragem,
+respectivamente. A igualdade em~\eqref{eq:homo_add} é aproximada: todo esquema de
+HE prático incorpora um pequeno ruído criptográfico cujos efeitos são discutidos na
+\cref{sec:custos}.
+
+\paragraph{O esquema CKKS.}
+O CKKS~\cite{Cheon2017}, também denominado HEAAN na literatura, é o esquema de HE
+mais adequado para FL porque opera nativamente sobre \textbf{números reais e complexos
+aproximados}. Outros esquemas (BFV, BGV) operam sobre inteiros exatos, o que obriga
+a quantização prévia dos gradientes com perda de precisão adicional. O CKKS codifica
+os gradientes diretamente com um fator de escala $\Delta$ e aceita um pequeno erro de
+aproximação como custo intrínseco, similar ao erro de ponto flutuante de 64 bits.
+
+\paragraph{Empacotamento de múltiplos valores por criptograma.}
+O CKKS não cifra um único valor por vez. Cada criptograma acomoda simultaneamente
+$N/2$ valores independentes, denominados \textbf{slots}, onde $N$ é o grau do
+polinômio anel usado internamente. Para $N=4096$, um criptograma carrega 2048 gradientes;
+para $N=8192$, carrega 4096. Isso reduz o número de operações de rede e de cifragem
+na proporção $N/2$ em relação a cifrar escalar a escalar.
+
+\paragraph{Por que só adição é suficiente para FL.}
+O algoritmo FedAvg, e mais geralmente qualquer forma de agregação fedrerada por soma
+ponderada, calcula
+\[
+  G = \sum_{k=1}^{K} w_k\, g_k,
+\]
+onde os pesos $w_k = n_k / \sum_j n_j$ são escalares conhecidos pelo servidor. Essa
+operação é inteiramente aditiva do ponto de vista criptográfico: basta que o cliente
+$k$ pré-multiplique $g_k$ por $w_k$ \emph{antes} de cifrar, e o servidor some os
+criptogramas. Nenhuma multiplicação entre dois textos cifrados é necessária. Isso é
+relevante porque multiplicação homomórfica entre dois textos cifrados é dispendiosa:
+requer relinearização e reescalonamento (\emph{rescaling}), que aumentam o custo de
+processamento e consomem o orçamento de ruído do esquema. A restrição ao regime
+somente-aditivo elimina completamente essas operações.
+
+% =============================================================================
+\section{O fluxo do FL cifrado}
+\label{sec:fluxo}
+% =============================================================================
+
+\paragraph{Preparação da rodada.}
+Uma entidade de confiança (que pode ser o próprio servidor sob determinadas
+premissas de segurança, ou uma terceira parte, ou um comitê de clientes) gera o par
+de chaves $(\text{pk}, \text{sk})$. A chave pública $\text{pk}$ é distribuída a todos
+os participantes; a chave secreta $\text{sk}$ permanece protegida.
+
+\paragraph{Cifragem no cliente.}
+Cada cliente $k$ computa o gradiente local $g_k \in \mathbb{R}^d$, divide-o em
+segmentos de tamanho $N/2$, codifica cada segmento como um polinômio com escala
+$\Delta$, e cifra com $\text{pk}$. O resultado é uma lista de textos cifrados
+$\{\text{ct}_k^{(i)}\}$. O cliente envia apenas esses criptogramas ao servidor;
+$g_k$ nunca sai em texto claro.
+
+\paragraph{Agregação no servidor.}
+O servidor recebe $\{\text{ct}_k^{(i)}\}$ de todos os $K$ clientes e soma os
+criptogramas correspondentes ao mesmo segmento $i$:
+\begin{equation}
+  \text{ct}_{\text{agg}}^{(i)} = \bigoplus_{k=1}^{K} \text{ct}_k^{(i)}.
+  \label{eq:agg}
+\end{equation}
+A operação $\oplus$ em~\eqref{eq:agg} é a adição coeficiente a coeficiente dos
+polinômios que compõem cada criptograma, que não requer $\text{sk}$. A
+\cref{fig:fl_pipeline} ilustra o fluxo completo.
+
+\paragraph{Decifragem e atualização.}
+O servidor envia $\{\text{ct}_{\text{agg}}^{(i)}\}$ ao detentor de $\text{sk}$, que
+decifra, decodifica e recupera uma aproximação de $\sum_k g_k$. Essa agregação é
+usada para atualizar o modelo global, que é distribuído em texto claro para a próxima
+rodada.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  node distance=0.4cm and 0.7cm,
+  box/.style  = {draw, rounded corners=3pt, minimum width=2.1cm, minimum height=0.6cm,
+                 align=center, font=\small},
+  sbox/.style = {draw, rounded corners=3pt, minimum width=2.1cm, minimum height=0.6cm,
+                 align=center, font=\small, fill=gray!10},
+  io/.style   = {draw, ellipse, minimum width=1.5cm, minimum height=0.6cm,
+                 align=center, font=\small},
+  arr/.style  = {-{Stealth[length=5pt]}, thick},
+  lab/.style  = {font=\scriptsize, text=gray, align=center}
+]
+
+% --- Cliente 1 ---
+\node[io]  (g1)  {$g_1$};
+\node[box, right=0.5cm of g1]  (c1)  {Codificar\\+ Cifrar($\text{pk}$)};
+\node[io,  right=0.5cm of c1]  (ct1) {$\text{ct}_1$};
+
+% --- Cliente 2 ---
+\node[io, below=0.5cm of g1]  (g2)  {$g_2$};
+\node[box, right=0.5cm of g2] (c2)  {Codificar\\+ Cifrar($\text{pk}$)};
+\node[io,  right=0.5cm of c2] (ct2) {$\text{ct}_2$};
+
+% --- Reticências ---
+\node[below=0.35cm of g2, font=\small] (dots) {$\vdots$};
+\node[below=0.5cm of g2] (gdots) {};
+
+% --- Cliente K ---
+\node[io, below=1.1cm of g2]  (gK)  {$g_K$};
+\node[box, right=0.5cm of gK] (cK)  {Codificar\\+ Cifrar($\text{pk}$)};
+\node[io,  right=0.5cm of cK] (ctK) {$\text{ct}_K$};
+
+% --- Servidor ---
+\node[sbox, right=1.2cm of ct2, yshift=-0.2cm] (srv) {Agregar\\$\oplus_{k=1}^K \text{ct}_k$};
+\node[io,  right=0.55cm of srv]  (cta) {$\text{ct}_{\text{agg}}$};
+
+% --- Decifrador ---
+\node[box, right=0.55cm of cta] (dec) {Decifrar($\text{sk}$)\\+ Decodificar};
+\node[io,  right=0.5cm of dec]  (G)   {$\sum_k g_k$};
+
+% Flechas clientes
+\draw[arr] (g1) -- (c1);
+\draw[arr] (c1) -- (ct1);
+\draw[arr] (ct1) -| (srv);
+
+\draw[arr] (g2) -- (c2);
+\draw[arr] (c2) -- (ct2);
+\draw[arr] (ct2) -- (srv);
+
+\draw[arr] (gK) -- (cK);
+\draw[arr] (cK) -- (ctK);
+\draw[arr] (ctK) -| (srv);
+
+% Flechas servidor → decifrador
+\draw[arr] (srv) -- (cta);
+\draw[arr] (cta) -- (dec);
+\draw[arr] (dec) -- (G);
+
+% Labels
+\node[lab, above=0.05cm of c1]   {cliente 1};
+\node[lab, above=0.05cm of c2]   {cliente 2};
+\node[lab, above=0.05cm of cK]   {cliente $K$};
+\node[lab, above=0.05cm of srv]  {servidor\\(sem $\text{sk}$)};
+\node[lab, above=0.05cm of dec]  {agregador\\(com $\text{sk}$)};
+\end{tikzpicture}
+\caption{Fluxo do FL com cifragem homomórfica. O servidor agrega criptogramas sem
+acesso à chave secreta; o gradiente em texto claro nunca trafega pela rede.}
+\label{fig:fl_pipeline}
+\end{figure}
+
+% =============================================================================
+\section{O que custa: precisão, ruído e comunicação}
+\label{sec:custos}
+% =============================================================================
+
+\paragraph{Escala $\Delta$ e erro de codificação.}
+Antes de cifrar, cada valor real $g \in \mathbb{R}$ é multiplicado por $\Delta$ e
+arredondado para um inteiro. O erro introduzido por esse arredondamento é delimitado
+por
+\begin{equation}
+  |\varepsilon_{\text{cod}}| \leq \frac{1}{2\Delta}.
+  \label{eq:enc_error}
+\end{equation}
+Aumentar $\Delta$ reduz o erro de codificação, mas exige um módulo aritmético $q$
+maior para que os coeficientes do polinômio permaneçam dentro do intervalo válido.
+Valores típicos são $\Delta = 2^{40}$ a $2^{50}$, garantindo de 12 a 15 dígitos
+decimais de precisão antes da agregação.
+
+\paragraph{Ruído criptográfico e crescimento com $K$.}
+Todo esquema RLWE incorpora um ruído $e$ nos coeficientes do criptograma durante a
+cifragem. Esse ruído é intencional: ele é a razão pela qual o adversário não consegue
+recuperar a chave secreta. Na decifragem, o ruído criptográfico se soma ao erro de
+codificação conforme a equação de erro total por slot:
+\begin{equation}
+  \hat{g} = g + \varepsilon_{\text{cod}} + \frac{e}{\Delta},
+  \label{eq:total_error}
+\end{equation}
+onde $e$ é amostrado de uma distribuição gaussiana discreta com desvio padrão $\sigma_e$.
+
+Ao agregar $K$ clientes, os ruídos individuais $e^{(k)}$ são independentes e de média
+zero. A variância total é a soma das variâncias; portanto, o desvio padrão do erro
+agregado por slot cresce como
+\begin{equation}
+  \sigma_{\text{agg}} \approx \frac{\sqrt{K}\,\sigma_e}{\Delta}.
+  \label{eq:noise_agg}
+\end{equation}
+O crescimento sublinear de $\sqrt{K}$ é uma vantagem em relação a mecanismos de ruído
+diferencial, que adicionam ruído proporcional a $K$. Ainda assim, em federações com
+centenas de clientes, o termo $\sqrt{K}\,\sigma_e/\Delta$ deve permanecer muito abaixo
+do sinal útil, o que impõe um limite inferior sobre $\Delta$.
+
+\paragraph{Grau $N$: capacidade, segurança e custo de banda.}
+O parâmetro $N$ regula três aspectos do sistema de forma simultânea. Primeiro, o
+número de slots por criptograma é $N/2$: para um gradiente de dimensão $d$, o cliente
+transmite $\lceil d/(N/2)\rceil$ criptogramas. Segundo, a resistência a ataques contra
+o problema RLWE subjacente aumenta com $N$ para um módulo $q$ fixo; valores
+comumente recomendados são $N \in \{4096, 8192, 16384\}$ para níveis de segurança de
+128, 192 e 256 bits, respectivamente. Terceiro, o tamanho de cada criptograma é
+$2 \times (12 + 8N)$ bytes, o que para $N=8192$ resulta em aproximadamente 131\,KB
+por criptograma; a expansão de tamanho é o principal custo de comunicação da abordagem.
+
+A \cref{tab:tradeoffs} resume os efeitos de variar cada parâmetro.
+
+\begin{table}[ht]
+\centering
+\caption{Efeitos de aumentar cada parâmetro do CKKS no contexto de FL.}
+\label{tab:tradeoffs}
+\small
+\begin{tabular}{lccc}
+\toprule
+\textbf{Parâmetro} & \textbf{Precisão} & \textbf{Segurança} & \textbf{Custo de banda} \\
+\midrule
+$\Delta$ maior   & melhora ($\uparrow$) & neutro          & neutro (precisa $q$ maior) \\
+$N$ maior        & mais slots           & melhora ($\uparrow$) & aumenta ($\uparrow$) \\
+$K$ maior        & piora ($\sqrt{K}$)   & neutro           & aumenta ($\uparrow$) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Comparação com alternativas.}
+A Privacidade Diferencial (DP) oferece proteção formal a custo computacional baixo, mas
+injeta ruído que escala linearmente com $K$ e não oculta o valor exato do gradiente
+do servidor. A Computação Segura Multipartidária (MPC) protege contra servidores
+desonestos sem expansão de mensagem, mas exige múltiplas rodadas de comunicação. O
+HE com CKKS é preferível quando o servidor deve ser incapaz de observar qualquer
+gradiente individual, a latência de múltiplas rodadas é proibitiva, e a precisão em
+ponto flutuante importa.
+
+% =============================================================================
+\section{Fundação de segurança e a biblioteca implementada}
+\label{sec:seguranca}
+% =============================================================================
+
+\paragraph{O problema RLWE.}
+A segurança do CKKS repousa sobre a hipótese do \textbf{Aprendizado com Erros em Anéis}
+(RLWE)~\cite{LPR2010}. Dado um polinômio $a$ sorteado uniformemente e um polinômio de
+ruído $e$ com coeficientes gaussianos pequenos, o RLWE afirma que o par
+$(a,\, a \cdot s + e)$, onde $s$ é a chave secreta, é computacionalmente
+indistinguível de dois polinômios uniformes independentes. Em outras palavras: mesmo
+observando o criptograma $(c_0, c_1)$ inteiro, um adversário sem $\text{sk}$ não
+consegue recuperar $g_k$ em tempo polinomial, assumindo que RLWE é intratável. A
+escolha dos parâmetros $(N, q)$ é guiada por estimativas de custo de ataques de
+retículo (LWE Estimator), e valores como $N=8192$ com $q < 2^{62}$ atingem 128 bits
+de segurança.
+
+\paragraph{A biblioteca \texttt{ckks\_core}.}
+O \emph{backend} C++ \texttt{ckks\_core}, implementado para suportar os experimentos
+da dissertação, opera em regime somente-aditivo com um único primo $q$ em vez de uma
+cadeia RNS completa. Essa escolha simplifica a implementação e reduz o \emph{overhead}
+de cifragem ao mínimo necessário para a agregação federada, onde nenhuma multiplicação
+entre textos cifrados é realizada. As multiplicações polinomiais internas (cifragem e
+decifragem) usam a Transformada Numérica Teórica (NTT) com complexidade $O(N\log N)$,
+e toda a aritmética modular é implementada com redução de Montgomery para eliminar
+divisões do caminho crítico. Os detalhes de implementação de baixo nível estão
+documentados no relatório técnico complementar. A interface Python (\texttt{ckks\_python})
+e a camada de alto nível para Flower (\texttt{ckks\_federated}) expõem esses
+mecanismos de forma transparente ao praticante de FL.
+
+\paragraph{Síntese.}
+O CKKS homomórfico aditivo é uma solução técnica concreta para o problema de privacidade
+na agregação federada. Seus três parâmetros essenciais, $N$, $\Delta$ e $K$, devem ser
+calibrados em conjunto: $N$ determina a capacidade de empacotamento e o custo de banda;
+$\Delta$ controla a precisão; $K$ amplifica o ruído por $\sqrt{K}$. Para as dimensões
+típicas de modelos de FL (dezenas de milhares a poucos milhões de parâmetros) e federações
+de até algumas centenas de clientes, os parâmetros $N=8192$ e $\Delta=2^{40}$ a $2^{50}$
+produzem ruído agregado abaixo de $10^{-4}$ por slot, compatível com a precisão de
+treinamento de modelos de aprendizado de máquina.
+
+% =============================================================================
+\begin{thebibliography}{9}
+
+\bibitem{Cheon2017}
+J.~H. Cheon, A.~Kim, M.~Kim, e Y.~Song,
+``Homomorphic encryption for arithmetic of approximate numbers,''
+em \emph{ASIACRYPT 2017}, LNCS vol.~10624, Springer, pp.~409--437.
+
+\bibitem{LPR2010}
+V.~Lyubashevsky, C.~Peikert, e O.~Regev,
+``On ideal lattices and learning with errors over rings,''
+em \emph{EUROCRYPT 2010}, LNCS vol.~6110, Springer, pp.~1--23.
+
+\bibitem{sealmanual}
+Microsoft Research,
+\emph{SEAL: Simple Encrypted Arithmetic Library -- Manual}, v.~4.1, 2023.
+\url{https://github.com/microsoft/SEAL}
+
+\bibitem{Geiping2020}
+J.~Geiping, H.~Bauermeister, H.~Dröge, e M.~Moeller,
+``Inverting gradients -- How easy is it to break privacy in federated learning?''
+em \emph{NeurIPS 2020}.
+
+\bibitem{Shokri2017}
+R.~Shokri, M.~Stronati, C.~Song, e V.~Shmatikov,
+``Membership inference attacks against machine learning models,''
+em \emph{IEEE S\&P 2017}.
+
+\end{thebibliography}
+
+\end{document}

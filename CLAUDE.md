@@ -315,7 +315,7 @@ and reassembles on decryption. Carries `original_size` as metadata.
 All C++ tests are in `tests/cpp/` and registered with CTest. Run with:
 
 ```bash
-cd build && ctest --output-on-failure        # all suites
+cd build && ctest --output-on-failure        # all suites (C++ + Python; Python needs -DCKKS_BUILD_PYTHON=ON)
 cd build && ctest -R test_noise -V           # single suite, verbose
 ```
 
@@ -333,12 +333,18 @@ cd build && ctest -R test_noise -V           # single suite, verbose
 | `test_serialization` | `tests/cpp/test_serialization.cpp` | Ciphertext, PublicKey, and SecretKey round-trips, expected byte lengths, homomorphic add after deserialization, truncation and trailing-byte error handling (231 checks) |
 | `test_prime_gen` | `tests/cpp/test_prime_gen.cpp` | NTT-friendly prime generation: bit size, congruence q ≡ 1 (mod 2N), primality (48 checks) |
 | `test_fl_aggregation` | `tests/test_fl_aggregation.cpp` | FL stress test: 90 clients, Δ=2^40, 90 homomorphic additions, per-slot error < 1e-4; overflow budget check (66 checks) |
+| `test_stress_aggregation` | `tests/test_stress_aggregation.cpp` | N ∈ {1024, 4096} FedAvg with 100–200 clients; overflow-boundary sweep at N=64 (5125 checks) |
 | `test_noise` | `tests/test_noise.cpp` | **Diagnostic:** prints per-coefficient decryption noise and infinity norm to stdout. Not a pass/fail test. |
 
 ### Python
 
+Three of these run under CTest when configured with `-DCKKS_BUILD_PYTHON=ON`
+(`py_test_stress_federated`, `py_test_overflow_federated`, `py_test_precision`).
+
 | File | What it tests |
 |------|---------------|
+| `tests/test_stress_federated.py` | `CKKSContext`/`CKKSTensor` at scale: auto-chunking, 100-client FedAvg, serialize, save/load, blind server, K sweep (25 checks) |
+| `tests/test_overflow_federated.py` | Reproduces modular overflow: high-mean vector fails by exactly q/Δ once K·mean > q/(2Δ); zero-mean and single-slot data and client-side 1/K do not (10 checks) |
 | `tests/python/test_poly.py` | `Poly` Python binding: construction, addition, zero-copy view, setter (10 checks) |
 | `test_py_ckks_simplifly.py` | End-to-end encode → encrypt → decrypt → decode; numerical noise verification |
 | `test_py_serialization.py` | `CKKSContext` save/load, ciphertext serialization, homomorphic add after deserialization (6 checks) |

@@ -1,0 +1,1289 @@
+% =============================================================================
+% Implementação de Baixo Nível da Biblioteca CKKS para Aprendizado Federado
+% Documento standalone – estilo dissertação (PT-BR)
+% Compilar: pdflatex dissertacao_baixo_nivel.tex  (2 passagens)
+% =============================================================================
+\documentclass[11pt,a4paper]{report}
+
+% --- Codificação e idioma ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+
+% --- Matemática ---
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+% --- Algoritmos ---
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\floatname{algorithm}{Algoritmo}
+\renewcommand{\listalgorithmname}{Lista de Algoritmos}
+
+% --- Diagramas TikZ ---
+% Nota: utiliza-se TikZ diretamente (bibliotecas arrows.meta, positioning, calc,
+% decorations.pathreplacing). A família tkz-euclide/tkz-graph destina-se a
+% construções de geometria euclidiana e teoria dos grafos, não sendo adequada
+% para diagramas de borboleta, fluxo de sinal e pipeline presentes neste documento.
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, calc, decorations.pathreplacing, matrix, shapes.geometric}
+
+% --- Tabelas ---
+\usepackage{booktabs}
+
+% --- Página ---
+\usepackage[a4paper, top=3cm, bottom=2.5cm, left=3cm, right=2.5cm]{geometry}
+
+% --- Links e referências ---
+\usepackage[colorlinks=true, allcolors=blue,
+            pdfauthor={Yuri Dimitre Dias de Faria},
+            pdftitle={Implementação de Baixo Nível da Biblioteca CKKS}]{hyperref}
+\usepackage[brazilian, nameinlink]{cleveref}
+
+% --- Teoremas ---
+\newtheorem{definition}{Definição}[chapter]
+\newtheorem{proposition}{Proposição}[chapter]
+\newtheorem{remark}{Observação}[chapter]
+
+% --- Macros ---
+\newcommand{\Rq}{\mathcal{R}_q}
+\newcommand{\Zq}{\mathbb{Z}_q}
+\newcommand{\npoly}{N_{\text{poly}}}
+
+% =============================================================================
+\begin{document}
+
+\title{\textbf{Implementação de Baixo Nível da Biblioteca CKKS\\
+para Aprendizado Federado Preservador de Privacidade}\\[1em]
+\large Documento técnico complementar à dissertação de mestrado}
+\author{Yuri Dimitre Dias de Faria\\
+\small Instituto de Computação -- UNICAMP\\
+\small Orientador: Prof. Dr. Allan Mariano de Souza}
+\date{Junho de 2026}
+\maketitle
+
+\tableofcontents
+\listoffigures
+\listofalgorithms
+
+% =============================================================================
+\chapter{Introdução}
+\label{cap:intro}
+% =============================================================================
+
+Este documento descreve a arquitetura e os mecanismos de baixo nível do \emph{backend}
+C++ da biblioteca CKKS customizada, desenvolvida para suportar operações de cifragem
+homomórfica em cenários de Aprendizado Federado (FL). O material aqui apresentado
+é complementar ao Capítulo~4 da dissertação de mestrado associada, que cobre os fundamentos
+do esquema CKKS, o modelo de erro da agregação homomórfica e a parametrização do
+problema RLWE~\cite{Cheon2017,sealmanual}. Pressupõe-se familiaridade com esses
+conceitos; o foco deste documento é a tradução das estruturas matemáticas em código
+executável de alto desempenho.
+
+O núcleo da biblioteca, denominado \texttt{ckks\_core}, é implementado em C++17 e
+compilado como biblioteca estática com as diretivas de otimização
+\texttt{-O3 -march=native -ffast-math -fopenmp-simd}, que ativam vetorização SIMD
+sem recorrer ao \emph{runtime} de \emph{threads} OpenMP, cuja integração com os
+laços da NTT está prevista para uma versão futura. A \cref{tab:modulos} lista os
+seis módulos hierárquicos e os arquivos correspondentes.
+
+\begin{table}[ht]
+\centering
+\caption{Módulos do núcleo \texttt{ckks\_core} e arquivos fonte.}
+\label{tab:modulos}
+\begin{tabular}{llp{7cm}}
+\toprule
+\textbf{Módulo} & \textbf{Arquivos} & \textbf{Responsabilidade} \\
+\midrule
+1 – Aritmética modular & \texttt{math\_utils.h/.cpp} & \texttt{mod\_add}, \texttt{mod\_sub}, Montgomery, primos NTT \\
+2 – Polinômio & \texttt{poly.h/.cpp} & Tipo \texttt{Poly} e adição SIMD \\
+3 – NTT & \texttt{ntt.h/.cpp} & Transformada negacíclica $O(N\log N)$ \\
+4 – Amostragem & \texttt{sampler.h/.cpp} & Uniforme, gaussiana discreta, ternária \\
+5 – Chave/Cifragem & \texttt{keygen.h}, \texttt{encryptor.h}, \texttt{decryptor.h}, \texttt{ckks\_core.cpp} & Geração de chaves, \texttt{encrypt}, \texttt{decrypt} \\
+6 – Avaliação/Codificação & \texttt{evaluator.h/.cpp}, \texttt{encoder.h/.cpp}, \texttt{serialization.cpp} & Adição homomórfica, codificação canônica, serialização \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Em contraste com implementações de propósito geral como Microsoft SEAL~\cite{sealmanual},
+o \texttt{ckks\_core} adota as simplificações a seguir, motivadas pelo foco exclusivo
+em agregação federada por adição homomórfica:
+
+\begin{itemize}
+  \item \textbf{Módulo único:} utiliza um único primo NTT $q \equiv 1 \pmod{2N}$, com
+    $q < 2^{62}$, em lugar da cadeia $Q = \prod_j q_j$ do modelo RNS completo discutido
+    no Capítulo~4 da dissertação. Não há \emph{rescaling} nem consumo progressivo de níveis.
+  \item \textbf{Regime somente-aditivo:} o servidor de FL agrega gradientes apenas por
+    $\texttt{Ciphertext} + \texttt{Ciphertext}$; não são implementadas relinearização,
+    chaves de Galois nem \emph{bootstrapping}.
+  \item \textbf{Orçamento de ruído estável:} a adição homomórfica não consome níveis da
+    cadeia de módulos; o orçamento de ruído permanece constante ao longo das rodadas de
+    agregação, ao contrário dos circuitos multiplicativos profundos.
+\end{itemize}
+
+Essas escolhas permitem concentrar todo o custo computacional nas multiplicações
+polinomiais da NTT, que dominam a cifragem e a decifragem.
+
+% =============================================================================
+\chapter{Fundamentos Algébricos do Anel de Polinômios}
+\label{cap:ring}
+% =============================================================================
+
+A biblioteca opera sobre o anel quociente
+\begin{equation}
+  \Rq \;=\; \mathbb{Z}_q[X]\,/\,(X^N + 1),
+  \label{eq:ring}
+\end{equation}
+onde $q$ é um número primo, $N$ é uma potência de dois e os coeficientes pertencem a
+$\Zq = \{0, 1, \ldots, q-1\}$. A relação $X^N \equiv -1 \pmod{X^N+1}$ confere ao anel
+uma estrutura negacíclica: no produto de dois polinômios $a, b \in \Rq$, o coeficiente
+de índice $i+j \geq N$ contribui com sinal negativo para o coeficiente de índice $i+j-N$.
+
+Na notação da dissertação, o grau polinomial aqui denominado $N$ corresponde ao parâmetro
+$\npoly$. A distinção fundamental deste \emph{backend} é que o módulo $q$ é um único
+primo, ao contrário da cadeia $Q = \prod_j q_j$ do modelo RNS; não há portanto
+\emph{rescaling} nem índice de nível.
+
+\begin{definition}[Primo NTT-amigável]
+\label{def:ntt_prime}
+Um primo $q$ é dito NTT-amigável de parâmetro $N$ se $q \equiv 1 \pmod{2N}$. Esta
+congruência garante a existência de uma raiz primitiva $2N$-ésima da unidade
+$\psi \in \mathbb{Z}_q^*$ tal que $\psi^N \equiv -1 \pmod{q}$, necessária para a
+NTT negacíclica descrita no \cref{cap:ntt}.
+\end{definition}
+
+Em memória, um polinômio é representado pela estrutura \texttt{Poly} com três campos:
+o módulo \texttt{uint64\_t q}, o grau \texttt{uint32\_t N} e um vetor de $N$ coeficientes
+\texttt{std::vector<uint64\_t> coeffs} em $[0, q)$. A adição de dois polinômios é
+implementada coeficiente a coeficiente com a diretiva \texttt{\#pragma omp simd}, que
+instrui o compilador a emitir instruções AVX2 (\texttt{vpsubq}, \texttt{vpcmpgtq},
+\texttt{vpand}) quando compilado com \texttt{-march=native}. A redução modular em cada
+coeficiente é realizada pela função \texttt{mod\_add}, descrita no \cref{cap:modular}.
+
+% =============================================================================
+\chapter{Aritmética Modular Sem Desvios}
+\label{cap:modular}
+% =============================================================================
+
+Adição e subtração modulares são os blocos primitivos de todos os laços internos da
+biblioteca. Para que o compilador os vetorize de forma eficiente, é necessário que não
+contenham desvios condicionais (\emph{branches}). A implementação emprega o truque da
+máscara binária: uma comparação de inteiros de 64 bits produz um valor em $\{0, 1\}$
+cuja negação bitwise em aritmética sem sinal produz a máscara $\{0,\; 2^{64}-1\}$.
+
+\section{Adição modular}
+\label{sec:mod_add}
+
+Sejam $a, b \in [0, q)$ com $q < 2^{63}$. A soma $a + b \in [0, 2q)$, de modo que é
+necessário subtrair $q$ se e somente se $a + b \geq q$. O \cref{alg:mod_add} implementa
+esta correção sem desvio.
+
+\begin{algorithm}[ht]
+\caption{\texttt{mod\_add}: adição modular sem desvio condicional}
+\label{alg:mod_add}
+\begin{algorithmic}[1]
+\Require $a, b \in [0, q)$;\; $q < 2^{63}$
+\Ensure $r = (a + b) \bmod q$
+\State $c \gets a + b$
+  \Comment{Sem \emph{overflow}: $c \in [0, 2q) \subset [0, 2^{64})$}
+\State $\text{máscara} \gets -(c \geq q)$
+  \Comment{$0$ se $c < q$;\; $2^{64}-1$ se $c \geq q$}
+\State \Return $c - (q \;\mathbin{\&}\; \text{máscara})$
+\end{algorithmic}
+\end{algorithm}
+
+A expressão $-(c \geq q)$, em aritmética inteira de 64 bits sem sinal, produz $0$ quando
+$c < q$ e $2^{64}-1$ quando $c \geq q$. O operador \texttt{\&} com $q$ seleciona
+$0$ ou $q$ sem desvio; o resultado pertence a $[0, q)$.
+
+\section{Subtração modular}
+\label{sec:mod_sub}
+
+Sejam $a, b \in [0, q)$. Se $a \geq b$, o resultado é $a - b \in [0, q)$; se $a < b$,
+o valor correto é $a - b + q$. O \cref{alg:mod_sub} aplica a correção pela mesma
+técnica de máscara.
+
+\begin{algorithm}[ht]
+\caption{\texttt{mod\_sub}: subtração modular sem desvio condicional}
+\label{alg:mod_sub}
+\begin{algorithmic}[1]
+\Require $a, b \in [0, q)$;\; $q < 2^{63}$
+\Ensure $r = (a - b) \bmod q$
+\State $c \gets a - b$
+  \Comment{Enrola para $[2^{64}-q,\, 2^{64})$ se $a < b$}
+\State $\text{máscara} \gets -(a < b)$
+\State \Return $c + (q \;\mathbin{\&}\; \text{máscara})$
+\end{algorithmic}
+\end{algorithm}
+
+As duas funções são declaradas \texttt{inline noexcept} no cabeçalho
+\texttt{include/math\_utils.h} e produzem, sob \texttt{-O3 -march=native}, código
+que o compilador reduz a duas a três instruções AVX2 vetoriais por laço de $N$
+coeficientes, eliminando qualquer desvio condicional no caminho crítico.
+
+% =============================================================================
+\chapter{Redução de Montgomery}
+\label{cap:montgomery}
+% =============================================================================
+
+A multiplicação modular ingênua requer uma divisão por $q$ a cada produto, operação
+custosa em hardware de propósito geral. A redução de Montgomery~\cite{Montgomery1985}
+substitui essa divisão por operações de deslocamento e soma, representando os
+elementos de $\mathbb{Z}_q$ em uma forma que incorpora um fator de potência de dois $R$.
+
+\section{Forma de Montgomery e constantes pré-computadas}
+\label{sec:mont_constants}
+
+Adota-se $R = 2^{64}$ e exige-se $q < 2^{62}$ (primo ímpar). A forma de Montgomery de
+$a \in \mathbb{Z}_q$ é
+\begin{equation}
+  \hat{a} \;=\; a \cdot R \bmod q.
+  \label{eq:mont_form}
+\end{equation}
+A estrutura \texttt{MontgomeryCtx} armazena três constantes pré-computadas em
+tempo de construção:
+\begin{itemize}
+  \item $q_{\text{inv}} = -q^{-1} \bmod 2^{64}$: usado internamente pelo algoritmo REDC;
+  \item $r_2 = R^2 \bmod q$: permite converter $a$ para a forma de Montgomery via
+    $\hat{a} = \text{REDC}(a \cdot r_2)$;
+  \item $q$: o módulo primo.
+\end{itemize}
+
+O cálculo de $q_{\text{inv}}$ emprega iteração de Newton sobre $\mathbb{Z}/2^{64}\mathbb{Z}$,
+que dobra a precisão binária a cada passo, conforme o \cref{alg:qinv}.
+
+\begin{algorithm}[ht]
+\caption{Cálculo de $q_{\text{inv}} = -q^{-1} \bmod 2^{64}$ por Newton--Raphson}
+\label{alg:qinv}
+\begin{algorithmic}[1]
+\Require $q$ ímpar, $q < 2^{62}$
+\Ensure $q_{\text{inv}}$ tal que $q \cdot q_{\text{inv}} \equiv -1 \pmod{2^{64}}$
+\State $x \gets q$
+  \Comment{Semente: $q \cdot q \equiv 1 \pmod{8}$ para todo $q$ ímpar}
+\For{$i \gets 1$ \textbf{até} $5$}
+  \State $x \gets x \cdot (2 - q \cdot x)$
+    \Comment{Dobra a precisão: de $\sim 3$ para $\sim 96$ bits em 5 iterações}
+\EndFor
+\State \Return $-x \bmod 2^{64}$
+\end{algorithmic}
+\end{algorithm}
+
+O valor $r_2$ é obtido via aritmética de 128 bits:
+\begin{equation}
+  r_2 = (R \bmod q)^2 \bmod q.
+  \label{eq:r2}
+\end{equation}
+
+\section{Algoritmo REDC}
+\label{sec:redc}
+
+O algoritmo REDC~\cite{Montgomery1985} computa $T \cdot R^{-1} \bmod q$ para
+$T \in [0, q \cdot R)$ sem divisão explícita por $q$.
+
+\begin{algorithm}[ht]
+\caption{REDC: redução de Montgomery}
+\label{alg:redc}
+\begin{algorithmic}[1]
+\Require $T \in [0, q \cdot R)$;\; $q_{\text{inv}} = -q^{-1} \bmod R$;\; $R = 2^{64}$
+\Ensure $T \cdot R^{-1} \bmod q$
+\State $m \gets (T \bmod R) \cdot q_{\text{inv}} \bmod R$
+  \Comment{Escolhe $m$ tal que $T + mq \equiv 0 \pmod{R}$}
+\State $t \gets (T + m \cdot q) \div R$
+  \Comment{Divisão exata: descarta os 64 bits inferiores por deslocamento}
+\State \Return $t - (q \;\mathbin{\&}\; -(t \geq q))$
+  \Comment{Normaliza $t \in [0, 2q)$ para $[0, q)$ sem desvio}
+\end{algorithmic}
+\end{algorithm}
+
+A propriedade $T + mq \equiv 0 \pmod{R}$ garante que a divisão na linha~2 seja exata,
+implementável como um deslocamento de 64 bits. O resultado preliminar pertence a $[0, 2q)$;
+a normalização da linha~3 usa o mesmo truque de máscara da \cref{sec:mod_add}.
+
+\section{Operações públicas do contexto de Montgomery}
+\label{sec:mont_ops}
+
+As três operações do \texttt{MontgomeryCtx} são definidas em termos de REDC:
+\begin{align}
+  \texttt{to\_mont}(a) &= \text{REDC}(a \cdot r_2) = a \cdot R \bmod q = \hat{a},
+    \label{eq:to_mont}\\
+  \texttt{from\_mont}(\hat{a}) &= \text{REDC}(\hat{a}) = a,
+    \label{eq:from_mont}\\
+  \texttt{mont\_mul}(\hat{a}, \hat{b}) &= \text{REDC}(\hat{a} \cdot \hat{b})
+    = a \cdot b \cdot R \bmod q = \widehat{a \cdot b}.
+    \label{eq:mont_mul}
+\end{align}
+
+A \cref{fig:montgomery_flow} ilustra o padrão de uso: os operandos são convertidos
+para a forma de Montgomery uma única vez; todas as multiplicações intermediárias operam
+no domínio de Montgomery sem custo adicional de conversão; a conversão inversa ocorre
+apenas ao final.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  node distance = 0.6cm and 1.5cm,
+  box/.style  = {draw, rounded corners=3pt, minimum width=2.6cm, minimum height=0.65cm,
+                 align=center, font=\small},
+  io/.style   = {draw, ellipse, minimum width=2.0cm, minimum height=0.65cm,
+                 align=center, font=\small},
+  arr/.style  = {-{Stealth[length=5pt]}, thick}
+]
+  \node[io]  (a)    {$a \in \mathbb{Z}_q$};
+  \node[io,  below=0.7cm of a] (b) {$b \in \mathbb{Z}_q$};
+
+  \node[box, right=1.4cm of a]  (am)   {$\hat{a} = aR \bmod q$};
+  \node[box, right=1.4cm of b]  (bm)   {$\hat{b} = bR \bmod q$};
+
+  \node[box, right=1.4cm of am, yshift=-0.68cm] (mul) {\texttt{mont\_mul}\\$\hat{a}\cdot\hat{b}$};
+
+  \node[box, right=1.4cm of mul] (res)  {$\widehat{ab}$};
+  \node[io,  right=1.3cm of res] (out)  {$ab \in \mathbb{Z}_q$};
+
+  \draw[arr] (a)  -- node[above, font=\footnotesize]{\texttt{to\_mont}} (am);
+  \draw[arr] (b)  -- node[below, font=\footnotesize]{\texttt{to\_mont}} (bm);
+  \draw[arr] (am) |- (mul);
+  \draw[arr] (bm) |- (mul);
+  \draw[arr] (mul) -- node[above, font=\footnotesize]{REDC} (res);
+  \draw[arr] (res) -- node[above, font=\footnotesize]{\texttt{from\_mont}} (out);
+\end{tikzpicture}
+\caption{Fluxo de uso típico do domínio de Montgomery. As conversões ocorrem uma única vez;
+o laço de multiplicações intermediárias usa exclusivamente \texttt{mont\_mul}, sem divisão
+por $q$.}
+\label{fig:montgomery_flow}
+\end{figure}
+
+% =============================================================================
+\chapter{Geração de Primos NTT-Amigáveis}
+\label{cap:primes}
+% =============================================================================
+
+O módulo primo $q$ é gerado pela função \texttt{generate\_proth\_prime(bit\_size, N)},
+que encontra o maior primo da forma $q = 2Nk + 1$ com exatamente \texttt{bit\_size} bits,
+satisfazendo assim a congruência $q \equiv 1 \pmod{2N}$ da \cref{def:ntt_prime} e
+o limite $q < 2^{62}$ exigido pelo contexto de Montgomery.
+
+\begin{algorithm}[ht]
+\caption{\texttt{generate\_proth\_prime}: primo NTT-amigável de tamanho fixo}
+\label{alg:prime_gen}
+\begin{algorithmic}[1]
+\Require $\texttt{bit\_size} \in [2, 62]$;\; $N > 0$
+\Ensure Primo $q \equiv 1 \pmod{2N}$,\; $2^{\texttt{bit\_size}-1} \leq q < 2^{\texttt{bit\_size}}$
+\State $\text{passo} \gets 2N$
+\State $q \gets \lfloor (2^{\texttt{bit\_size}} - 2) / \text{passo} \rfloor
+       \cdot \text{passo} + 1$
+  \Comment{Maior candidato $< 2^{\texttt{bit\_size}}$ com $q \equiv 1 \pmod{2N}$}
+\While{$q \geq 2^{\texttt{bit\_size}-1}$}
+  \If{\Call{MillerRabin}{$q$}}
+    \State \Return $q$
+  \EndIf
+  \State $q \gets q - \text{passo}$
+\EndWhile
+\State \textbf{erro:} nenhum primo encontrado para os parâmetros fornecidos
+\end{algorithmic}
+\end{algorithm}
+
+O teste de primalidade \textsc{MillerRabin} é a variante determinística com as 12
+testemunhas fixas $\{2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37\}$, cuja exatidão
+é garantida para todo $n < 3{,}3 \times 10^{24}$, cobrindo o intervalo $[0, 2^{62})$
+sem falsos positivos~\cite{Pomerance1980}. Cada candidato satisfaz
+$q \equiv 1 \pmod{2N}$ por construção; a busca em ordem descendente seleciona o primo
+de maior valor com a largura de bits solicitada, maximizando a margem disponível para o
+orçamento de ruído $B = \log_2 q$.
+
+% =============================================================================
+\chapter{Transformada Numérica Teórica Negacíclica}
+\label{cap:ntt}
+% =============================================================================
+
+A multiplicação de polinômios em $\Rq$ constitui a operação dominante tanto na cifragem
+quanto na decifragem. A multiplicação escolar tem complexidade $O(N^2)$; a Transformada
+Numérica Teórica (NTT) reduz esse custo para $O(N \log N)$~\cite{LongaNaehrig2016}.
+A implementação utiliza a variante negacíclica, que avalia os polinômios nas raízes
+primitivas $2N$-ésimas da unidade, tornando a redução módulo $X^N+1$ implícita ao
+próprio algoritmo.
+
+\section{Derivação da raiz primitiva $\psi$}
+\label{sec:psi}
+
+Dado $q \equiv 1 \pmod{2N}$, o grupo multiplicativo $\mathbb{Z}_q^*$ admite uma raiz
+primitiva $g$ (menor inteiro cujas potências percorrem todo o grupo). O elemento
+\begin{equation}
+  \psi = g^{(q-1)/(2N)} \bmod q
+  \label{eq:psi}
+\end{equation}
+tem ordem exatamente $2N$, satisfazendo $\psi^N \equiv -1 \pmod{q}$. Esta verificação
+é realizada no construtor do contexto \texttt{NttCtx}; caso contrário, uma exceção é
+lançada, prevenindo uso silencioso de parâmetros inválidos.
+
+\section{Pré-computação das tabelas de twiddle}
+\label{sec:twiddle}
+
+O contexto \texttt{NttCtx} armazena, além de $\psi$ e $\psi^{-1}$, dois vetores de
+$N$ elementos chamados \emph{tabelas de twiddle}:
+\begin{align}
+  \texttt{psi\_pow}[k] &= \texttt{to\_mont}(\psi^{\,\text{bit\_rev}(k)}),
+    \label{eq:psi_pow}\\
+  \texttt{psi\_inv\_pow}[k] &= \texttt{to\_mont}(\psi^{-\text{bit\_rev}(k)}),
+    \label{eq:psi_inv_pow}
+\end{align}
+onde $\text{bit\_rev}(k)$ é o inteiro obtido invertendo os $\log_2 N$ bits de $k$.
+
+As potências são geradas por multiplicação sequencial de Montgomery, conforme a
+\cref{eq:twiddle_seq}, evitando a exponenciação por quadração para cada entrada:
+\begin{equation}
+  \texttt{raw}[k] = \psi^k \bmod q
+    = \texttt{mont\_mul}(\texttt{raw}[k-1],\; \hat{\psi}).
+  \label{eq:twiddle_seq}
+\end{equation}
+Em seguida, os valores são permutados pela tabela \texttt{bit\_rev}, de modo que o
+laço interno da borboleta acessa \texttt{psi\_pow} em sequência linear, favorecendo
+a linha de \emph{cache}. Adicionalmente, o contexto armazena
+\begin{equation}
+  N_{\text{inv}}^{\text{mont}} = \texttt{to\_mont}(N^{-1} \bmod q),
+  \label{eq:ninv}
+\end{equation}
+utilizado para normalizar a NTT inversa.
+
+\section{NTT direta: Cooley--Tukey DIT}
+\label{sec:ntt_forward}
+
+A NTT direta (\emph{decimation-in-time}, DIT) do \cref{alg:ntt_forward} processa
+$\log_2 N$ estágios em ordem crescente de $m$. Em cada estágio, borboletas radix-2
+operam sobre pares de coeficientes separados por \texttt{gap} posições.
+
+\begin{algorithm}[ht]
+\caption{\texttt{ntt\_forward}: NTT negacíclica direta (Cooley--Tukey DIT)}
+\label{alg:ntt_forward}
+\begin{algorithmic}[1]
+\Require Vetor $a[0\ldots N-1]$ em $\mathbb{Z}_q$;\; contexto \texttt{NttCtx}
+\Ensure $a$ substituído pelos valores de avaliação nas raízes $\psi^1, \psi^3, \ldots, \psi^{2N-1}$
+\For{$m \gets 1$ \textbf{até} $N/2$ por duplicação}
+  \State $\text{gap} \gets N / (2m)$
+  \For{$i \gets 0$ \textbf{até} $m-1$}
+    \State $w_i \gets \texttt{psi\_pow}[m + i]$
+      \Comment{Fator de giro em forma de Montgomery}
+    \For{$j \gets 0$ \textbf{até} $\text{gap}-1$}
+      \State $u \gets a[2i \cdot \text{gap} + j]$
+      \State $v \gets \texttt{mont\_mul}(a[2i \cdot \text{gap} + \text{gap} + j],\; w_i)$
+        \Comment{Twiddle \emph{antes} da soma/diferença (DIT)}
+      \State $a[2i \cdot \text{gap} + j]            \gets \texttt{mod\_add}(u, v, q)$
+      \State $a[2i \cdot \text{gap} + \text{gap} + j] \gets \texttt{mod\_sub}(u, v, q)$
+    \EndFor
+  \EndFor
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+Entrada em ordem natural; saída em ordem bit-reversa. Os ponteiros \texttt{\_\_restrict\_\_}
+no laço interno informam ao compilador a ausência de aliasing entre os vetores, favorecendo
+a vetorização automática.
+
+\section{NTT inversa: Gentleman--Sande DIF}
+\label{sec:ntt_inverse}
+
+A NTT inversa (\emph{decimation-in-frequency}, DIF) é a transposta algébrica da direta.
+Ela processa os estágios em ordem decrescente de $m$, realizando primeiro a soma/diferença
+e depois a multiplicação pelo fator de giro inverso.
+
+\begin{algorithm}[ht]
+\caption{\texttt{ntt\_inverse}: NTT negacíclica inversa (Gentleman--Sande DIF)}
+\label{alg:ntt_inverse}
+\begin{algorithmic}[1]
+\Require Vetor $\hat{a}[0\ldots N-1]$ em ordem bit-reversa;\; contexto \texttt{NttCtx}
+\Ensure $a$ em ordem natural (coeficientes do polinômio original)
+\For{$m \gets N/2$ \textbf{descendo até} $1$ por divisão por 2}
+  \State $\text{gap} \gets N / (2m)$
+  \For{$i \gets 0$ \textbf{até} $m-1$}
+    \State $w_i \gets \texttt{psi\_inv\_pow}[m + i]$
+    \For{$j \gets 0$ \textbf{até} $\text{gap}-1$}
+      \State $u \gets a[2i \cdot \text{gap} + j]$
+      \State $v \gets a[2i \cdot \text{gap} + \text{gap} + j]$
+      \State $a[2i \cdot \text{gap} + j]            \gets \texttt{mod\_add}(u, v, q)$
+        \Comment{Soma \emph{antes} do twiddle (DIF)}
+      \State $a[2i \cdot \text{gap} + \text{gap} + j] \gets
+        \texttt{mont\_mul}(\texttt{mod\_sub}(u, v, q),\; w_i)$
+    \EndFor
+  \EndFor
+\EndFor
+\For{$i \gets 0$ \textbf{até} $N-1$}
+  \State $a[i] \gets \texttt{mont\_mul}(a[i],\; N_{\text{inv}}^{\text{mont}})$
+    \Comment{Normalização: remove fator $N$ acumulado}
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+Após $\log_2 N$ estágios DIF, cada coeficiente carrega um fator implícito $N$, removido
+pela passagem de normalização final. Os algoritmos \cref{alg:ntt_forward} e
+\cref{alg:ntt_inverse} formam par exato: $\texttt{ntt\_inverse}(\texttt{ntt\_forward}(a)) = a$
+para qualquer $a \in \Rq$, sem permutação adicional.
+
+\section{Diagramas da borboleta e do grafo de fluxo de sinal}
+\label{sec:ntt_diagrams}
+
+A \cref{fig:butterfly} apresenta as duas variantes da borboleta radix-2. A
+\cref{fig:ntt8} mostra o grafo de fluxo de sinal completo da NTT direta para $N=8$,
+com três estágios.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  arr/.style = {-{Stealth[length=4pt]}, thick},
+  neg/.style = {-{Stealth[length=4pt]}, thick, dashed},
+  lbl/.style = {font=\small}
+]
+%% --- Borboleta DIT (esquerda) ---
+\begin{scope}
+  % nós de entrada
+  \node[lbl] (ul) at (0,  1.0) {$u$};
+  \node[lbl] (vl) at (0,  0.0) {$v$};
+  % nós de saída
+  \node[lbl] (ur) at (3.8, 1.0) {$u + w{\cdot}v$};
+  \node[lbl] (vr) at (3.8, 0.0) {$u - w{\cdot}v$};
+  % setas
+  \draw[arr] (0.2, 1.0) -- (2.5, 1.0);
+  \draw[arr] (0.2, 0.0) -- (2.5, 0.0);
+  \draw[arr] (0.2, 0.0) -- node[right=1pt, font=\footnotesize]{$\times w$} (2.4, 0.92);
+  \draw[neg] (0.2, 1.0) -- (2.4, 0.08);
+  \node[lbl] at (1.9, -0.55) {(a) DIT (\emph{Cooley--Tukey})};
+\end{scope}
+
+%% --- Borboleta DIF (direita) ---
+\begin{scope}[xshift=6.2cm]
+  \node[lbl] (ul2) at (0,  1.0) {$u$};
+  \node[lbl] (vl2) at (0,  0.0) {$v$};
+  \node[lbl] (ur2) at (3.6, 1.0) {$u + v$};
+  \node[lbl] (vr2) at (3.6, 0.0) {$w{\cdot}(u - v)$};
+  \draw[arr] (0.2, 1.0) -- (2.7, 1.0);
+  \draw[arr] (0.2, 0.0) -- (2.7, 0.0);
+  \draw[arr] (0.2, 1.0) -- (2.5, 0.08);
+  \draw[neg] (0.2, 0.0) -- node[right=1pt, font=\footnotesize]{$\times w$} (2.5, 0.92);
+  \node[lbl] at (1.8, -0.55) {(b) DIF (\emph{Gentleman--Sande})};
+\end{scope}
+\end{tikzpicture}
+\caption{Borboletas radix-2. Setas sólidas indicam contribuição positiva; setas tracejadas
+indicam contribuição negativa (subtração). (a)~DIT: o fator de giro $w$ é aplicado antes
+da soma/diferença. (b)~DIF: o fator de giro é aplicado após a subtração.}
+\label{fig:butterfly}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  xscale=2.0, yscale=0.72,
+  dot/.style  = {circle, fill=black, inner sep=1.8pt},
+  arr/.style  = {-{Stealth[length=3.5pt]}, thin},
+  neg/.style  = {-{Stealth[length=3.5pt]}, thin, densely dashed},
+  lbl/.style  = {font=\footnotesize}
+]
+% Estágios: 0=entrada, 1,2,3=saída
+\foreach \stage in {0,1,2,3}{
+  \foreach \row in {0,...,7}{
+    \node[dot] (s\stage\row) at (\stage, -\row) {};
+  }
+}
+
+% Rótulos de entrada
+\foreach \i in {0,...,7}{
+  \node[lbl, left=4pt of s0\i] {$x_{\i}$};
+}
+
+% Rótulos de saída (ordem bit-reversa: 0,4,2,6,1,5,3,7)
+\foreach \i/\br in {0/0,1/4,2/2,3/6,4/1,5/5,6/3,7/7}{
+  \node[lbl, right=4pt of s3\i] {$\hat{X}_{\br}$};
+}
+
+% Estágio 1: m=1, gap=4 — pares (0,4),(1,5),(2,6),(3,7)
+\foreach \top/\bot in {0/4, 1/5, 2/6, 3/7}{
+  \draw[arr] (s0\top) -- (s1\top);
+  \draw[arr] (s0\bot) -- (s1\top);
+  \draw[arr] (s0\top) -- (s1\bot);
+  \draw[neg] (s0\bot) -- (s1\bot);
+}
+
+% Estágio 2: m=2, gap=2 — pares (0,2),(1,3),(4,6),(5,7)
+\foreach \top/\bot in {0/2, 1/3, 4/6, 5/7}{
+  \draw[arr] (s1\top) -- (s2\top);
+  \draw[arr] (s1\bot) -- (s2\top);
+  \draw[arr] (s1\top) -- (s2\bot);
+  \draw[neg] (s1\bot) -- (s2\bot);
+}
+
+% Estágio 3: m=4, gap=1 — pares (0,1),(2,3),(4,5),(6,7)
+\foreach \top/\bot in {0/1, 2/3, 4/5, 6/7}{
+  \draw[arr] (s2\top) -- (s3\top);
+  \draw[arr] (s2\bot) -- (s3\top);
+  \draw[arr] (s2\top) -- (s3\bot);
+  \draw[neg] (s2\bot) -- (s3\bot);
+}
+
+% Rótulos dos estágios
+\node[lbl] at (0,  1.2) {Entrada};
+\node[lbl] at (1,  1.2) {Estágio 1};
+\node[lbl] at (2,  1.2) {Estágio 2};
+\node[lbl] at (3,  1.2) {Estágio 3};
+\end{tikzpicture}
+\caption{Grafo de fluxo de sinal da NTT direta negacíclica para $N=8$ (3 estágios,
+$\log_2 8 = 3$). Setas sólidas representam adição e setas tracejadas representam subtração
+(fatores de giro omitidos por clareza). Entrada em ordem natural
+$x_0, \ldots, x_7$; saída em ordem bit-reversa
+$\hat{X}_0, \hat{X}_4, \hat{X}_2, \hat{X}_6, \hat{X}_1, \hat{X}_5, \hat{X}_3, \hat{X}_7$.}
+\label{fig:ntt8}
+\end{figure}
+
+\section{Multiplicação polinomial via NTT}
+\label{sec:poly_ntt_mul}
+
+A multiplicação de $a, b \in \Rq$ é realizada em três etapas pelo \cref{alg:poly_ntt_mul},
+com complexidade total $O(N \log N)$.
+
+\begin{algorithm}[ht]
+\caption{\texttt{poly\_ntt\_mul}: multiplicação polinomial negacíclica via NTT}
+\label{alg:poly_ntt_mul}
+\begin{algorithmic}[1]
+\Require Polinômios $a, b \in \Rq$;\; contexto \texttt{NttCtx}
+\Ensure $c = a \cdot b \bmod (X^N+1,\; q)$
+\State $\hat{a} \gets \texttt{ntt\_forward}(a)$
+\State $\hat{b} \gets \texttt{ntt\_forward}(b)$
+\For{$i \gets 0$ \textbf{até} $N-1$}
+  \State $\hat{c}[i] \gets (\hat{a}[i] \cdot \hat{b}[i]) \bmod q$
+    \Comment{Produto de 128 bits; saídas da NTT são resíduos normais, não em forma de Montgomery}
+\EndFor
+\State \Return $\texttt{ntt\_inverse}(\hat{c})$
+\end{algorithmic}
+\end{algorithm}
+
+O produto ponto a ponto utiliza aritmética de 128 bits em vez de \texttt{mont\_mul}
+porque as avaliações produzidas por \texttt{ntt\_forward} são resíduos em forma normal
+(os fatores de Montgomery dos twiddles se cancelam durante as borboletas), e a redução
+direta por $q$ é computacionalmente equivalente, porém mais simples.
+
+% =============================================================================
+\chapter{Amostragem}
+\label{cap:sampling}
+% =============================================================================
+
+O módulo de amostragem fornece as distribuições necessárias para a geração de chaves e
+cifragem. A classe \texttt{Sampler} encapsula um gerador Mersenne Twister de 64 bits
+(\texttt{mt19937\_64}~\cite{Matsumoto1998}), é não copiável para evitar correlação de
+estados entre instâncias, e aceita semente determinística para reprodutibilidade em testes.
+
+\section{Distribuição uniforme}
+\label{sec:uniform}
+
+A função \texttt{uniform(N, q)} gera um polinômio com cada coeficiente amostrado
+independentemente e uniformemente de $\{0, 1, \ldots, q-1\}$, delegando a uniformidade
+exata à distribuição \texttt{std::uniform\_int\_distribution<uint64\_t>(0, q-1)} da
+biblioteca padrão C++.
+
+\section{Gaussiana discreta}
+\label{sec:gaussian}
+
+A função \texttt{gaussian(N, q, sigma, tail)} amostra cada coeficiente segundo a
+gaussiana discreta $D_{\mathbb{Z}, \sigma}$ com rejeição de amostras além de
+$\text{tail} \cdot \sigma$ (padrão $\text{tail} = 6$, probabilidade de rejeição
+$< 2 \times 10^{-9}$ por coeficiente), conforme o \cref{alg:gaussian}.
+
+\begin{algorithm}[ht]
+\caption{\texttt{gaussian}: amostragem da gaussiana discreta com rejeição}
+\label{alg:gaussian}
+\begin{algorithmic}[1]
+\Require $N$, $q$, $\sigma > 0$, $\text{tail} \geq 1$
+\Ensure Polinômio $e$ com coeficientes em $[0,q)$ distribuídos segundo $D_{\mathbb{Z},\sigma}$ truncada
+\State $L \gets \lfloor \text{tail} \cdot \sigma \rceil$
+\For{$i \gets 0$ \textbf{até} $N-1$}
+  \Repeat
+    \State $x \gets \lfloor \mathcal{N}(0, \sigma^2) \rceil$
+      \Comment{Amostra normal e arredonda para inteiro}
+  \Until{$|x| \leq L$}
+  \State $r \gets x \bmod q$;\quad \textbf{se} $r < 0$ \textbf{então} $r \gets r + q$
+    \Comment{Levanta $-1 \mapsto q-1$}
+  \State $e[i] \gets r$
+\EndFor
+\State \Return $e$
+\end{algorithmic}
+\end{algorithm}
+
+O parâmetro padrão $\sigma = 3{,}2$ segue a recomendação da literatura para o nível
+de segurança de 128 bits no modelo RLWE~\cite{Cheon2017}. O ruído de cifragem gerado
+por esta distribuição corresponde ao termo $e$ da análise de erro do Capítulo~4 da
+dissertação.
+
+\section{Distribuições ternárias}
+\label{sec:ternary}
+
+Dois tipos de distribuição ternária são suportados, ambos necessários em diferentes
+pontos do protocolo.
+
+\paragraph{Ternária uniforme.} \texttt{ternary\_uniform(N, q)} amostra cada coeficiente
+independentemente de $\{-1, 0, 1\}$ com probabilidade $1/3$ cada, mapeando
+$-1 \mapsto q-1$.
+
+\paragraph{Ternária de peso de Hamming fixo.} \texttt{ternary\_hw(N, q, hw)} gera
+exatamente $\text{hw}/2$ coeficientes iguais a $+1$ e $\text{hw}/2$ iguais a $q-1$,
+com as demais posições nulas, usando o algoritmo de Fisher--Yates
+parcial~\cite{Knuth1997}, conforme o \cref{alg:ternary_hw}.
+
+\begin{algorithm}[ht]
+\caption{\texttt{ternary\_hw}: ternário de peso de Hamming fixo}
+\label{alg:ternary_hw}
+\begin{algorithmic}[1]
+\Require $N$, $q$, $\text{hw}$ par, $\text{hw} \leq N$
+\Ensure Polinômio com exatamente $\text{hw}$ coeficientes não nulos:
+  $\text{hw}/2$ em $+1$ e $\text{hw}/2$ em $q-1$
+\State $\text{idx}[i] \gets i$ para $i = 0, \ldots, N-1$
+\For{$i \gets 0$ \textbf{até} $\text{hw}-1$}
+  \State $j \gets \mathcal{U}\{i, \ldots, N-1\}$
+    \Comment{Inteiro uniforme: Fisher--Yates parcial}
+  \State $\text{idx}[i] \leftrightarrow \text{idx}[j]$
+\EndFor
+\For{$i \gets 0$ \textbf{até} $\text{hw}/2 - 1$}
+  \State $\text{poly}[\text{idx}[i]] \gets 1$
+\EndFor
+\For{$i \gets \text{hw}/2$ \textbf{até} $\text{hw}-1$}
+  \State $\text{poly}[\text{idx}[i]] \gets q - 1$
+\EndFor
+\State \Return $\text{poly}$
+\end{algorithmic}
+\end{algorithm}
+
+% =============================================================================
+\chapter{Geração de Chaves}
+\label{cap:keygen}
+% =============================================================================
+
+O esquema de chaves é baseado no problema RLWE~\cite{LPR2010}. A classe
+\texttt{KeyGenerator} encapsula um \texttt{Sampler} e um \texttt{NttCtx} e é não
+copiável. Dois objetos são gerados:
+
+\begin{itemize}
+  \item \textbf{Chave secreta} (\texttt{SecretKey}): polinômio ternário
+    $s \in \{-1, 0, 1\}^N$, com $-1$ representado como $q-1$;
+  \item \textbf{Chave pública} (\texttt{PublicKey}): par $(p_0, p_1) \in \Rq^2$
+    satisfazendo a invariante
+    \begin{equation}
+      p_0 + p_1 \cdot s = e \pmod{q},
+      \label{eq:pk_invariant}
+    \end{equation}
+    onde $e$ é um ruído gaussiano pequeno.
+\end{itemize}
+
+\begin{algorithm}[ht]
+\caption{\texttt{gen\_public\_key}: geração da chave pública RLWE}
+\label{alg:keygen}
+\begin{algorithmic}[1]
+\Require Chave secreta $s$;\; parâmetros $(N, q, \sigma)$
+\Ensure Par $(p_0, p_1)$ com $p_0 + p_1 \cdot s = e$
+\State $a \gets \texttt{uniform}(N, q)$
+  \Comment{$p_1 = a$: polinômio uniforme em $\Rq$}
+\State $e \gets \texttt{gaussian}(N, q, \sigma)$
+\State $a_s \gets \texttt{poly\_ntt\_mul}(a, s)$
+\For{$i \gets 0$ \textbf{até} $N-1$}
+  \State $p_0[i] \gets \texttt{mod\_sub}(e[i],\; a_s[i],\; q)$
+    \Comment{$p_0 = e - a \cdot s$}
+\EndFor
+\State \Return $(p_0,\; a)$
+\end{algorithmic}
+\end{algorithm}
+
+A função \texttt{gen\_key\_bundle} expõe adicionalmente o ruído $e$ para verificação
+da identidade~\eqref{eq:pk_invariant} em testes, mas este valor nunca deve ser
+divulgado em produção, pois permite recuperar $s$ por resolução de sistema linear.
+
+% =============================================================================
+\chapter{Cifragem e Decifragem}
+\label{cap:enc_dec}
+% =============================================================================
+
+\section{Cifragem de texto claro}
+\label{sec:encrypt}
+
+A classe \texttt{Encryptor} armazena uma cópia da chave pública, um \texttt{Sampler} e
+um \texttt{NttCtx}. O método \texttt{encrypt(pt)} sorteia amostras frescas a cada
+chamada, garantindo segurança semântica sob RLWE.
+
+\begin{algorithm}[ht]
+\caption{\texttt{encrypt}: cifragem de texto claro no esquema CKKS}
+\label{alg:encrypt}
+\begin{algorithmic}[1]
+\Require Texto claro $m \in \Rq$;\; chave pública $(p_0, p_1)$;\; $(N, q, \sigma)$
+\Ensure Texto cifrado $(c_0, c_1)$ com $c_0 + c_1 \cdot s \approx m$
+\State $u  \gets \texttt{ternary\_uniform}(N, q)$
+\State $e_0 \gets \texttt{gaussian}(N, q, \sigma)$
+\State $e_1 \gets \texttt{gaussian}(N, q, \sigma)$
+\State $p_1 u \gets \texttt{poly\_ntt\_mul}(p_1, u)$
+\State $p_0 u \gets \texttt{poly\_ntt\_mul}(p_0, u)$
+\For{$i \gets 0$ \textbf{até} $N-1$}
+  \State $c_1[i] \gets \texttt{mod\_add}(p_1 u[i],\; e_1[i],\; q)$
+    \Comment{$c_1 = p_1 u + e_1$}
+\EndFor
+\For{$i \gets 0$ \textbf{até} $N-1$}
+  \State $c_0[i] \gets \texttt{mod\_add}(\texttt{mod\_add}(p_0 u[i],\; e_0[i],\; q),\; m[i],\; q)$
+    \Comment{$c_0 = p_0 u + e_0 + m$}
+\EndFor
+\State \Return $(c_0, c_1)$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Análise do ruído de cifragem}
+\label{sec:encrypt_noise}
+
+A quantidade decifrada é computada explicitando a invariante~\eqref{eq:pk_invariant}:
+\begin{align}
+  c_0 + c_1 \cdot s
+    &= (p_0 u + e_0 + m) + (p_1 u + e_1) \cdot s \notag \\
+    &= u \cdot (p_0 + p_1 s) + e_0 + e_1 s + m \notag \\
+    &= u \cdot e_{\text{chave}} + e_0 + e_1 s + m.
+    \label{eq:enc_noise}
+\end{align}
+O termo de erro $\varepsilon = u \cdot e_{\text{chave}} + e_0 + e_1 s$ é um polinômio
+com coeficientes delimitados em norma infinita por aproximadamente
+$2N \cdot \text{tail} \cdot \sigma \ll q/2$, garantindo que a decifragem recupere $m$
+com erro controlado. Após a decodificação por $\Delta$, o erro por \emph{slot} é
+$|\varepsilon_{\text{slot}}| \lesssim 2N \cdot \text{tail} \cdot \sigma / \Delta$,
+expressão que coincide com o ruído criptográfico individual $e$ da análise de agregação
+do Capítulo~4 da dissertação.
+
+\section{Decifragem}
+\label{sec:decrypt}
+
+A classe \texttt{Decryptor} armazena a chave secreta e um \texttt{NttCtx}. A decifragem
+é uma única multiplicação polinomial seguida de adição coeficiente a coeficiente.
+
+\begin{algorithm}[ht]
+\caption{\texttt{decrypt}: decifragem de texto cifrado CKKS}
+\label{alg:decrypt}
+\begin{algorithmic}[1]
+\Require Texto cifrado $(c_0, c_1)$;\; chave secreta $s$
+\Ensure $m' = c_0 + c_1 \cdot s \approx m$ (texto claro ruidoso)
+\State $c_1 s \gets \texttt{poly\_ntt\_mul}(c_1, s)$
+\For{$i \gets 0$ \textbf{até} $N-1$}
+  \State $m'[i] \gets \texttt{mod\_add}(c_0[i],\; c_1 s[i],\; q)$
+\EndFor
+\State \Return $m'$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Pipeline de cifragem e decifragem}
+\label{sec:pipeline}
+
+A \cref{fig:enc_pipeline} resume o fluxo completo, incluindo a etapa de avaliação
+homomórfica descrita no \cref{cap:evaluator}.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  node distance = 0.4cm and 0.9cm,
+  box/.style = {draw, rounded corners=3pt, minimum width=2.3cm, minimum height=0.7cm,
+                align=center, font=\small},
+  io/.style  = {draw, ellipse, minimum width=1.8cm, minimum height=0.65cm,
+                align=center, font=\small},
+  arr/.style = {-{Stealth[length=5pt]}, thick},
+  sub/.style = {font=\scriptsize, text=gray}
+]
+  \node[io]  (m)    {$m \in \Rq$};
+  \node[box, right=0.8cm of m]   (enc)  {\texttt{encrypt}\\$(p_0,p_1,u,e_0,e_1)$};
+  \node[io,  right=0.8cm of enc] (ct)   {$(c_0^{(k)}, c_1^{(k)})$};
+  \node[box, right=0.8cm of ct]  (add)  {\texttt{add\_inplace}\\$k = 1,\ldots,K$};
+  \node[io,  right=0.8cm of add] (cta)  {$(c_0', c_1')$};
+  \node[box, right=0.8cm of cta] (dec)  {\texttt{decrypt}\\$c_0' + c_1' s$};
+  \node[io,  right=0.8cm of dec] (m2)   {$m' \approx \sum m^{(k)}$};
+
+  \draw[arr] (m)   -- (enc);
+  \draw[arr] (enc) -- (ct);
+  \draw[arr] (ct)  -- (add);
+  \draw[arr] (add) -- (cta);
+  \draw[arr] (cta) -- (dec);
+  \draw[arr] (dec) -- (m2);
+
+  \node[sub, below=0.1cm of enc] {2$\times$ NTT-mul};
+  \node[sub, below=0.1cm of add] {$2N$ mod\_add};
+  \node[sub, below=0.1cm of dec] {1$\times$ NTT-mul};
+\end{tikzpicture}
+\caption{Pipeline de cifragem, avaliação homomórfica por $K$ adições e decifragem.
+As operações dominantes são as multiplicações polinomiais via NTT ($O(N\log N)$ cada).}
+\label{fig:enc_pipeline}
+\end{figure}
+
+% =============================================================================
+\chapter{Avaliador Homomórfico Aditivo}
+\label{cap:evaluator}
+% =============================================================================
+
+A classe \texttt{Evaluator} é sem estado além dos parâmetros $(N, q)$ e todos os seus
+métodos são seguros para uso concorrente sobre textos cifrados distintos. O método
+\texttt{add\_inplace} realiza a adição coeficiente a coeficiente das duas componentes,
+conforme o \cref{alg:add_inplace}.
+
+\begin{algorithm}[ht]
+\caption{\texttt{add\_inplace}: adição homomórfica in-place}
+\label{alg:add_inplace}
+\begin{algorithmic}[1]
+\Require Textos cifrados $(c_0^{(1)}, c_1^{(1)})$ e $(c_0^{(2)}, c_1^{(2)})$ com mesmo $(N, q)$
+\Ensure $(c_0^{(1)}, c_1^{(1)}) \gets (c_0^{(1)} + c_0^{(2)},\; c_1^{(1)} + c_1^{(2)}) \bmod q$
+\For{$i \gets 0$ \textbf{até} $N-1$}
+  \Comment{Laço vetorizado: \texttt{\#pragma omp simd}}
+  \State $c_0^{(1)}[i] \gets \texttt{mod\_add}(c_0^{(1)}[i],\; c_0^{(2)}[i],\; q)$
+\EndFor
+\For{$i \gets 0$ \textbf{até} $N-1$}
+  \Comment{Laço vetorizado: \texttt{\#pragma omp simd}}
+  \State $c_1^{(1)}[i] \gets \texttt{mod\_add}(c_1^{(1)}[i],\; c_1^{(2)}[i],\; q)$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Correção.} A propriedade homomórfica verifica-se diretamente:
+\begin{align}
+  (c_0^{(1)}+c_0^{(2)}) + (c_1^{(1)}+c_1^{(2)}) \cdot s
+    &= (c_0^{(1)} + c_1^{(1)} s) + (c_0^{(2)} + c_1^{(2)} s) \notag \\
+    &\approx m_1 + m_2.
+    \label{eq:add_homo}
+\end{align}
+
+\paragraph{Crescimento do ruído.} Como demonstrado na análise de agregação do Capítulo~4
+da dissertação, após $K$ adições de textos cifrados independentes, o ruído acumulado
+cresce em norma RMS como $\sqrt{K} \cdot \sigma_e$, onde $\sigma_e$ é o desvio padrão
+do ruído individual de cifragem. O erro por \emph{slot} após decodificação é
+\begin{equation}
+  \varepsilon_K \approx \frac{\sqrt{K} \cdot \sigma_e}{\Delta},
+  \label{eq:noise_growth}
+\end{equation}
+que é a mesma expressão $\sqrt{K} \cdot e / \Delta$ da equação de erro agregado da
+dissertação.
+
+% =============================================================================
+\chapter{Codificação Canônica CKKS}
+\label{cap:encoder}
+% =============================================================================
+
+O codificador converte vetores de números reais ou complexos em polinômios de $\Rq$ e
+vice-versa, por meio do mapa de imersão canônica $\sigma$~\cite{Cheon2017}.
+
+\section{Mapa de imersão canônica}
+\label{sec:canonical_embedding}
+
+Dado um polinômio $f \in \mathbb{Z}[X]/(X^N+1)$, a imersão canônica avalia $f$ nas $N$
+raízes primitivas $2N$-ésimas da unidade:
+\begin{equation}
+  \omega_j = e^{i\pi(2j+1)/N}, \quad j = 0, 1, \ldots, N-1.
+  \label{eq:roots}
+\end{equation}
+Como $\omega_{N-1-j} = \overline{\omega_j}$, a imagem $\sigma(f)$ exibe simetria
+hermitiana, de modo que apenas $N/2$ valores são independentes, definindo os
+$N/2$ \emph{slots} do esquema CKKS.
+
+\section{Codificação ($\sigma^{-1}$)}
+\label{sec:encode}
+
+O \cref{alg:encode} recebe um vetor $z \in \mathbb{C}^{N/2}$, aplica a imersão inversa
+e quantiza os coeficientes com a escala $\Delta$.
+
+\begin{algorithm}[ht]
+\caption{\texttt{encode}: codificação canônica CKKS}
+\label{alg:encode}
+\begin{algorithmic}[1]
+\Require $z \in \mathbb{C}^{N/2}$;\; escala $\Delta$;\; parâmetros $(N, q)$
+\Ensure Polinômio $m \in \Rq$ tal que $\sigma(m/\Delta) \approx z$
+\State $v[i] \gets z[i]$ para $i = 0, \ldots, N/2-1$
+\State $v[N-1-i] \gets \overline{z[i]}$ para $i = 0, \ldots, N/2-1$
+  \Comment{Simetria hermitiana}
+\State $v \gets \texttt{FFT}(v)$
+\For{$k \gets 0$ \textbf{até} $N-1$}
+  \State $a_k \gets \operatorname{Re}(v[k] \cdot e^{-i\pi k/N}) / N$
+    \Comment{Torção e normalização}
+  \State $c \gets \lfloor \Delta \cdot a_k \rceil$
+    \Comment{Escalonamento e arredondamento}
+  \State $r \gets c \bmod q$;\quad \textbf{se} $r < 0$ \textbf{então} $r \gets r + q$
+  \State $m[k] \gets r$
+\EndFor
+\State \Return $m$
+\end{algorithmic}
+\end{algorithm}
+
+O erro de quantização por coeficiente é delimitado por $1/(2\Delta)$, produzindo erro
+por \emph{slot} de magnitude $\sim N/(2\Delta)$, conforme a equação de erro de
+codificação $|\varepsilon_{\text{enc}}| \leq 1/(2\Delta)$ do Capítulo~4 da dissertação.
+
+\section{Decodificação ($\sigma$)}
+\label{sec:decode}
+
+A decodificação inverte o processo: centraliza os coeficientes em $(-q/2, q/2]$, divide
+por $\Delta$, aplica a torção e a IFFT.
+
+\begin{algorithm}[ht]
+\caption{\texttt{decode}: decodificação canônica CKKS}
+\label{alg:decode}
+\begin{algorithmic}[1]
+\Require Polinômio $m \in \Rq$;\; escala $\Delta$;\; parâmetros $(N, q)$
+\Ensure $z \approx \sigma(m/\Delta) \in \mathbb{C}^{N/2}$
+\For{$k \gets 0$ \textbf{até} $N-1$}
+  \State $c \gets m[k]$;\quad \textbf{se} $c > q/2$ \textbf{então} $c \gets c - q$
+    \Comment{Centraliza em $(-q/2,\, q/2]$}
+  \State $b[k] \gets (c / \Delta) \cdot e^{i\pi k/N}$
+    \Comment{Desnormalizção e torção}
+\EndFor
+\State $v \gets N \cdot \texttt{IFFT}(b)$
+  \Comment{IFFT com normalização $\times N$ para desfazer o $1/N$ da FFT}
+\State \Return $v[0], \ldots, v[N/2-1]$
+\end{algorithmic}
+\end{algorithm}
+
+A condição $q > 2\Delta \cdot \max_j |z_j|$ deve ser satisfeita para que a
+centralização produza o coeficiente correto.
+
+% =============================================================================
+\chapter{Multiplicação por Texto Claro (Referência)}
+\label{cap:mul_plain}
+% =============================================================================
+
+A função \texttt{mul\_plain(ct, pt)} implementa a multiplicação de um texto cifrado
+por um texto claro por meio do algoritmo escolar $O(N^2)$ no domínio de Montgomery.
+Ela serve como implementação de referência para verificação de correção e não é
+utilizada na produção da biblioteca, onde a multiplicação via NTT será adicionada
+em versão futura.
+
+A redução negacíclica $X^N \equiv -1$ é aplicada inline: produtos de coeficientes com
+índice $i+j \geq N$ contribuem com sinal negativo para o coeficiente de índice $i+j-N$.
+
+\begin{algorithm}[ht]
+\caption{\texttt{mul\_plain}: multiplicação escolar negacíclica em domínio de Montgomery}
+\label{alg:mul_plain}
+\begin{algorithmic}[1]
+\Require Texto cifrado $(c_0, c_1)$;\; texto claro $m$;\; contexto \texttt{MontgomeryCtx}
+\Ensure Texto cifrado $(r_0, r_1)$ com $r_b = c_b \cdot m \bmod (X^N+1, q)$ para $b \in \{0,1\}$
+\State Converta todos os coeficientes para forma de Montgomery: $\hat{c}_0, \hat{c}_1, \hat{m}$
+\For{$b \in \{0, 1\}$}
+  \For{$i \gets 0$ \textbf{até} $N-1$}
+    \For{$j \gets 0$ \textbf{até} $N-1$}
+      \State $p \gets \texttt{mont\_mul}(\hat{c}_b[i],\; \hat{m}[j])$
+      \If{$i + j < N$}
+        \State $r_b[i+j] \gets \texttt{mod\_add}(r_b[i+j],\; p,\; q)$
+      \Else
+        \State $r_b[i+j-N] \gets \texttt{mod\_sub}(r_b[i+j-N],\; p,\; q)$
+          \Comment{$X^N \equiv -1$: sinal negativo}
+      \EndIf
+    \EndFor
+  \EndFor
+  \State Converta $r_b$ de volta: $\texttt{from\_mont}$ coeficiente a coeficiente
+\EndFor
+\State \Return $(r_0, r_1)$
+\end{algorithmic}
+\end{algorithm}
+
+% =============================================================================
+\chapter{Serialização}
+\label{cap:serialization}
+% =============================================================================
+
+O módulo de serialização implementa um formato binário \emph{little-endian}
+auto-descritivo para transporte em redes FL. A unidade atômica é a representação de
+um polinômio \texttt{Poly}.
+
+\section{Formato de fio}
+\label{sec:wire_format}
+
+O leiaute de bytes de um polinômio é:
+\begin{equation}
+  \underbrace{N\;(\texttt{u32,\;4\,B})}_{\text{grau}}
+  \;\|\;
+  \underbrace{q\;(\texttt{u64,\;8\,B})}_{\text{módulo}}
+  \;\|\;
+  \underbrace{c_0,\;c_1,\;\ldots,\;c_{N-1}\;(N \times 8\,\text{B})}_{\text{coeficientes em }
+    \emph{little-endian}},
+  \label{eq:poly_wire}
+\end{equation}
+totalizando $12 + 8N$ bytes por polinômio. Os objetos compostos são concatenações
+diretas desse bloco:
+
+\begin{itemize}
+  \item \textbf{Ciphertext}: $[c_0\;\text{Poly}]\;[c_1\;\text{Poly}]$
+    $= 2(12+8N)$ bytes;
+  \item \textbf{PublicKey}: $[p_0\;\text{Poly}]\;[p_1\;\text{Poly}]$
+    $= 2(12+8N)$ bytes;
+  \item \textbf{SecretKey}: $[s\;\text{Poly}]$ $= 12+8N$ bytes.
+\end{itemize}
+
+A \cref{fig:serial_layout} ilustra o leiaute de um \texttt{Ciphertext}.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  node distance = 0cm,
+  hdr/.style = {draw, minimum width=1.5cm, minimum height=0.7cm,
+                align=center, font=\scriptsize, fill=blue!15},
+  dat/.style = {draw, minimum width=4.5cm, minimum height=0.7cm,
+                align=center, font=\scriptsize, fill=gray!12},
+  lbl/.style = {font=\footnotesize}
+]
+  % Poly c0
+  \node[hdr] (N0)  at (0,1)    {$N$\\u32, 4B};
+  \node[hdr, right=of N0] (q0) {$q$\\u64, 8B};
+  \node[dat, right=of q0] (d0) {$c_0[0],\;c_0[1],\;\ldots,\;c_0[N{-}1]$\\$N\times$ u64, $8N$ B};
+
+  % Poly c1
+  \node[hdr, right=0.3cm of d0] (N1) {$N$\\u32, 4B};
+  \node[hdr, right=of N1] (q1) {$q$\\u64, 8B};
+  \node[dat, right=of q1] (d1) {$c_1[0],\;c_1[1],\;\ldots,\;c_1[N{-}1]$\\$N\times$ u64, $8N$ B};
+
+  % Brace c0
+  \draw[decorate, decoration={brace, amplitude=5pt, mirror}]
+    (N0.south west) -- (d0.south east)
+    node[midway, below=7pt, lbl] {componente $c_0$: $12+8N$ bytes};
+
+  % Brace c1
+  \draw[decorate, decoration={brace, amplitude=5pt, mirror}]
+    (N1.south west) -- (d1.south east)
+    node[midway, below=7pt, lbl] {componente $c_1$: $12+8N$ bytes};
+
+  % Brace total
+  \draw[decorate, decoration={brace, amplitude=8pt}]
+    (N0.north west) -- (d1.north east)
+    node[midway, above=9pt, lbl]
+    {\texttt{Ciphertext}: $2(12+8N)$ bytes};
+\end{tikzpicture}
+\caption{Leiaute de bytes do \texttt{Ciphertext} no formato \emph{little-endian}
+auto-descritivo. Cada polinômio carrega seu próprio $N$ e $q$, permitindo validação
+completa de integridade na desserialização.}
+\label{fig:serial_layout}
+\end{figure}
+
+\section{Validação na desserialização}
+\label{sec:deser_validation}
+
+A função \texttt{from\_bytes} verifica quatro condições antes de aceitar os dados:
+(i) comprimento suficiente para o cabeçalho $(N, q)$; (ii) comprimento suficiente para
+os $N$ coeficientes; (iii) concordância dos valores de $N$ e $q$ lidos com os esperados,
+prevenindo substituição silenciosa de parâmetros; e (iv) ausência de bytes residuais após
+o final esperado.
+
+% =============================================================================
+\chapter{Compilação e Vetorização}
+\label{cap:build}
+% =============================================================================
+
+O núcleo \texttt{ckks\_core} é compilado como biblioteca estática com código independente
+de posição (\texttt{-fPIC}), permitindo ligação tanto a executáveis quanto ao módulo de
+extensão Python. A \cref{tab:flags} lista as diretivas de compilação e seu propósito.
+
+\begin{table}[ht]
+\centering
+\caption{Diretivas de compilação do \texttt{ckks\_core} via CMake.}
+\label{tab:flags}
+\begin{tabular}{lp{9cm}}
+\toprule
+\textbf{Flag} & \textbf{Propósito} \\
+\midrule
+\texttt{-O3}             & Otimizações agressivas de código (desenrolamento de laço, \emph{inlining}) \\
+\texttt{-march=native}   & Emite instruções para a microarquitetura do \emph{host}, habilitando AVX2 \\
+\texttt{-ffast-math}     & Otimizações de ponto flutuante; utilizado principalmente pelo codificador CKKS \\
+\texttt{-fopenmp-simd}   & Ativa \texttt{\#pragma omp simd} sem carregar o \emph{runtime} de \emph{threads} OpenMP \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A diretiva \texttt{\#pragma omp simd} está presente nos laços de adição de
+\texttt{Poly::operator+} e \texttt{Evaluator::add\_inplace}. Nos laços internos da NTT,
+a vetorização é induzida pelos qualificadores \texttt{\_\_restrict\_\_} nos ponteiros de
+entrada e saída da borboleta, que informam ao compilador a ausência de aliasing.
+
+Vale registrar uma divergência entre os dois caminhos de construção: o CMake
+inclui \texttt{-ffast-math} e \texttt{-fopenmp-simd}; a construção alternativa via
+\texttt{setup.py} (modo \emph{pip}) utiliza apenas \texttt{-O3 -march=native -Wall}.
+Resultados numéricos do codificador podem diferir levemente entre os dois modos quando
+operando próximo dos limites de precisão de ponto flutuante, pois \texttt{-ffast-math}
+permite reordenações que alteram o arredondamento.
+
+% =============================================================================
+\chapter{Conclusão e Trabalhos Futuros}
+\label{cap:conclusion}
+% =============================================================================
+
+Este documento apresentou a implementação de baixo nível do \emph{backend} C++ da
+biblioteca CKKS customizada, organizada em torno de três pilares técnicos:
+(i)~redução de Montgomery para eliminação de divisões na aritmética modular, com
+custo de construção $O(1)$ amortizado sobre toda a execução;
+(ii)~NTT negacíclica para multiplicação polinomial em $O(N \log N)$, com tabelas
+de twiddle pré-computadas em forma de Montgomery e em ordem bit-reversa para acesso
+linear à linha de \emph{cache}; e
+(iii)~aritmética modular sem desvios condicionais para vetorização automática via AVX2.
+
+As escolhas de projeto, em particular o uso de um único primo NTT em lugar de uma cadeia
+RNS completa e a restrição ao regime somente-aditivo, mantiveram a complexidade de
+implementação baixa sem comprometer a correção para o caso de uso alvo: agregação
+federada de gradientes por adição homomórfica.
+
+Os trabalhos futuros imediatos incluem:
+
+\begin{enumerate}
+  \item \textbf{NTT multithread:} paralelização dos laços de borboleta com
+    \texttt{-fopenmp} para aproveitar múltiplos núcleos em grades $N \geq 8192$;
+  \item \textbf{Multiplicação escalar via NTT:} substituição de \texttt{mul\_plain}
+    por \texttt{poly\_ntt\_mul}, reduzindo a complexidade de $O(N^2)$ para $O(N \log N)$;
+  \item \textbf{Cadeia RNS:} extensão para múltiplos primos $q_1, \ldots, q_L$ com
+    implementação de \emph{rescaling}, habilitando profundidade multiplicativa para
+    circuitos de FL mais complexos.
+\end{enumerate}
+
+% =============================================================================
+\begin{thebibliography}{99}
+
+\bibitem{Cheon2017}
+J.~H. Cheon, A.~Kim, M.~Kim, e Y.~Song,
+``Homomorphic encryption for arithmetic of approximate numbers,''
+em \emph{Advances in Cryptology -- ASIACRYPT 2017},
+Lecture Notes in Computer Science, vol.~10624,
+Springer, 2017, pp.~409--437.
+
+\bibitem{Montgomery1985}
+P.~L. Montgomery,
+``Modular multiplication without trial division,''
+\emph{Mathematics of Computation},
+vol.~44, n.~170, pp.~519--521, abr. 1985.
+
+\bibitem{CooleyTukey1965}
+J.~W. Cooley e J.~W. Tukey,
+``An algorithm for the machine calculation of complex Fourier series,''
+\emph{Mathematics of Computation},
+vol.~19, n.~90, pp.~297--301, 1965.
+
+\bibitem{LongaNaehrig2016}
+P.~Longa e M.~Naehrig,
+``Speeding up the number theoretic transform for faster ideal lattice-based cryptography,''
+em \emph{Cryptology and Network Security -- CANS 2016},
+Lecture Notes in Computer Science, vol.~10052,
+Springer, 2016, pp.~124--139.
+
+\bibitem{LPR2010}
+V.~Lyubashevsky, C.~Peikert, e O.~Regev,
+``On ideal lattices and learning with errors over rings,''
+em \emph{Advances in Cryptology -- EUROCRYPT 2010},
+Lecture Notes in Computer Science, vol.~6110,
+Springer, 2010, pp.~1--23.
+
+\bibitem{sealmanual}
+Microsoft Research,
+\emph{SEAL: Simple Encrypted Arithmetic Library -- Manual},
+versão 4.1, 2023.
+Disponível em: \url{https://github.com/microsoft/SEAL}
+
+\bibitem{Pomerance1980}
+C.~Pomerance, J.~L. Selfridge, e S.~S. Wagstaff~Jr.,
+``The pseudoprimes to $25 \cdot 10^9$,''
+\emph{Mathematics of Computation},
+vol.~35, n.~151, pp.~1003--1026, 1980.
+
+\bibitem{Matsumoto1998}
+M.~Matsumoto e T.~Nishimura,
+``Mersenne twister: A 623-dimensionally equidistributed uniform pseudo-random number
+generator,''
+\emph{ACM Transactions on Modeling and Computer Simulation},
+vol.~8, n.~1, pp.~3--30, jan. 1998.
+
+\bibitem{Knuth1997}
+D.~E. Knuth,
+\emph{The Art of Computer Programming, Vol.~2: Seminumerical Algorithms},
+3.ª~ed., Addison-Wesley, 1997.
+
+\end{thebibliography}
+
+\end{document}
