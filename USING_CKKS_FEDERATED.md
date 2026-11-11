@@ -60,7 +60,7 @@ unscaled additions before overflow  =  q / (2·Δ)  ≈  2^52 / 2^41  =  2048
 ```
 
 **With the `|D_i|/1024` client scaling the summed polynomial carries `Σ(|D_i|/1024)·w`.**  Keep
-`Σ(|D_i|/1024)·mean|w| < q/(2Δ)` (shrink the scale factor, lower Δ, or raise q) so no coefficient wraps.
+`Σ(|D_i|/1024)·max|w| < q/(2Δ)` (shrink the scale factor, lower Δ, or raise q) so no coefficient wraps.
 
 ### 2.4 Parameter constraints
 
@@ -423,7 +423,7 @@ Everything else is derived.
 | 8192 | 60 | 40 | 4096 | 4096 float64 | 524 288 | Very large add. budget |
 
 > ¹ **Unscaled addition budget** = Q / (2·Δ) ≈ 2^bits / 2^(scale_bits+1).
-> The limit applies to the summed coefficients: keep `Σ(|D_i|/1024)·mean|w| < q/(2Δ)`.
+> The limit applies to the summed coefficients: keep `Σ(|D_i|/1024)·max|w| < q/(2Δ)`.
 
 **Arrays larger than N/2** are automatically split into multiple ciphertext chunks by
 `CKKSTensor`; `decrypt()` reassembles them transparently.
@@ -439,7 +439,7 @@ Everything else is derived.
 | `add_inplace` silently produces wrong result | Tensors have different chunk counts | Ensure both tensors were created with the same `original_size` / slot layout |
 | `decrypt()` returns values near 0 for all slots | Server-side context has no SK | Use the client-side `ctx` for decryption |
 | Large imaginary parts in low-level decode | Using `Encoder.decode` directly — imaginary is real noise | Use `CKKSTensor` which calls `np.real()`, or discard `.imag` manually |
-| Aggregated result is wildly wrong (not just noisy) | Overflow: K × Δ > q/2 without pre-scaling | Keep `Σ(\|D_i\|/1024)·mean\|w\|` below `q/(2Δ)` (smaller client scale, lower Δ, or larger q) |
+| Aggregated result is wildly wrong (not just noisy) | Overflow: K × Δ > q/2 without pre-scaling | Keep `Σ(\|D_i\|/1024)·max\|w\|` below `q/(2Δ)` (smaller client scale, lower Δ, or larger q) |
 | `ValueError: (N, q) mismatch` from `add_inplace` | Mixing ciphertexts from different contexts | Use one shared `CKKSContext` per FL round |
 | Non-deterministic failures with fixed seed | `seed=0` used — this is correct (OS entropy) | Set an explicit `seed=1` or similar for reproducible tests |
 
