@@ -1,7 +1,7 @@
 # fhedsoma
 
 **fhedsoma** is a C++17 implementation of the CKKS homomorphic encryption scheme with Python
-bindings, built for one job: **summing encrypted model updates in Federated
+bindings, built for one job: **summing encrypted model states in Federated
 Learning (FL)**.
 
 - Backend: NTT-based polynomial multiplication, Montgomery reduction, `#pragma omp simd`.
@@ -10,12 +10,14 @@ Learning (FL)**.
 
 ## Purpose
 
-In FL, each client trains locally and sends weights to a server. With additive
-HE the server can aggregate those weights without seeing them:
+In FL, each client trains locally and sends its **model state** (the weights, not an update
+or delta) to a server. With additive HE the server can aggregate those states without seeing them:
 
-1. Every client encrypts `w_i / K` with the shared public key.
+1. Every client scales its state by `|D_i|/1024` (`|D_i|` = size of its local dataset) and
+   encrypts the result with the shared public key.
 2. The server adds the ciphertexts. It holds no secret key.
-3. A client decrypts the sum and gets the FedAvg result.
+3. A client decrypts the sum and **normalises after decryption** (divides by `Σ|D_i|/1024`),
+   which gives the weighted FedAvg state.
 
 The library is specialised for this flow, so it leaves out what FL does not
 need: ciphertext × ciphertext multiplication, rotations, relinearization,
@@ -40,9 +42,9 @@ polynomial access (`Poly`, zero-copy NumPy views) for research on custom FL prot
 
 | Limit | Consequence |
 |---|---|
-| Additive only | Apply the `1/K` FedAvg divisor on the **client**, in plaintext, before encrypting. |
+| Additive only | The server cannot rescale. Clients apply the `|D_i|/1024` weight in plaintext before encrypting; the normalisation by `Σ|D_i|/1024` happens after decryption. |
 | Single modulus, no rescaling | Zero multiplicative depth. |
-| Overflow budget | Each *coefficient* of the summed plaintext polynomial must stay below `q/2`. With `Δ=2^40` and a 52-bit prime that is about `q/(2Δ) = 2048` unscaled additions. With client-side `1/K` scaling it is effectively unlimited. |
+| Overflow budget | Each *coefficient* of the summed plaintext polynomial must stay below `q/2`. With `Δ=2^40` and a 52-bit prime that is about `q/(2Δ) = 2048` unscaled additions. The summed polynomial carries `Σ(|D_i|/1024)·w`, so the budget is `Σ(|D_i|/1024)·mean|w| < q/(2Δ)`. |
 | `CKKSTensor.decrypt()` returns real parts only | Use `Encoder.decode()` for complex slots. |
 | Built with `-march=native` | The `.so` is not portable across CPU architectures. Rebuild per machine. |
 | No standard parameter enforcement | You choose `(N, bits)`. `N=4096, bits=52` is the minimum recommended for 128-bit security. `N=1024` is for experiments only. |
@@ -99,14 +101,16 @@ import numpy as np
 from ckks_federated import CKKSContext, CKKSTensor
 
 K = 10                                    # number of clients
+sizes = np.array([800, 1200, 1024, 500, 2000, 900, 1100, 1500, 700, 1300])   # |D_i|
+weights = sizes / 1024                    # per-client scale |D_i|/1024
 
 # Key holder (client side)
 ctx = CKKSContext(N=4096, bits=52, scale_bits=40)
 ctx.save("keys/")                         # params.pkl, pk.bin, sk.bin
 
-# Each client: pre-scale by 1/K, then encrypt
-updates = [np.random.randn(10_000) for _ in range(K)]
-payloads = [CKKSTensor(ctx, u / K).serialize() for u in updates]   # list[bytes] for gRPC
+# Each client: scale its model state by |D_i|/1024, then encrypt
+states = [np.random.randn(10_000) for _ in range(K)]
+payloads = [CKKSTensor(ctx, w * s).serialize() for w, s in zip(weights, states)]   # list[bytes] for gRPC
 
 # Server: public key only, adds ciphertexts, cannot decrypt
 server_ctx = CKKSContext.load("keys/", public_only=True)
@@ -114,9 +118,9 @@ agg = CKKSTensor(server_ctx, payloads[0])
 for p in payloads[1:]:
     agg += CKKSTensor(server_ctx, p)
 
-# Client: decrypt the FedAvg result
-result = CKKSTensor(ctx, agg.serialize()).decrypt()
-assert np.allclose(result, np.mean(updates, axis=0), atol=1e-4)
+# Client: decrypt, then normalise by Σ|D_i|/1024
+result = CKKSTensor(ctx, agg.serialize()).decrypt() / weights.sum()
+assert np.allclose(result, np.average(states, axis=0, weights=sizes), atol=1e-4)
 ```
 
 `CKKSContext` supports `pickle` (multiprocessing, Flower) and `from_keys(...)`
@@ -159,7 +163,7 @@ All 17 CTest suites pass (14 C++, 3 Python). Errors are the maximum absolute err
 
 | Experiment | Setup | Max error |
 |---|---|---|
-| FedAvg, C++ (`test_fl_aggregation`) | 90 clients, Δ=2^40, 1/90 client scaling | real 4.6e-09, imag 3.0e-09 |
+| FedAvg, C++ (`test_fl_aggregation`) | 90 clients, Δ=2^40, each input pre-scaled by 1/90 (test setup) | real 4.6e-09, imag 3.0e-09 |
 | FedAvg, C++ (`test_stress_aggregation`) | N=1024, 200 clients, 512 slots | real 1.6e-07, imag 1.4e-07 |
 | FedAvg, C++ (`test_stress_aggregation`) | N=4096, 100 clients, 2048 slots | real 4.4e-07, imag 6.2e-07 |
 | FedAvg, Python (`test_stress_federated`) | N=1024, 100 clients, 2567 values (6 chunks) | 1.2e-07 |
@@ -188,14 +192,14 @@ worst case: a constant `v` encodes to the constant polynomial `v·Δ`, so coeffi
 | Constant 1.0, K=2252 (1.1× limit) | **wrong by exactly 4096.000 (= q/Δ) in every slot** |
 | Zero-mean random, K=2252 | correct, error 5.5e-07 |
 | One slot = 1.0, K=2252 | correct, error 4.3e-07 |
-| Constant 1.0, K=2252, client-side `1/K` | correct, error 4.8e-07 |
+| Constant 1.0, K=2252, each input scaled by `1/K` | correct, error 4.8e-07 |
 | Mean sweep at K=1000, `K·mean/limit` = 0.50 / 0.95 | correct, errors 3.6e-07 / 2.9e-07 |
 | Mean sweep at K=1000, `K·mean/limit` = 1.05 / 2.00 | **wrong by 4096** |
 
 Failure starts exactly where `K·mean` crosses `q/(2Δ)`, and the error is a whole multiple of `q/Δ`
 (after any later rescaling, e.g. dividing by a total weight, it becomes a large constant offset in
 every slot of the affected packet). The limit applies to the **server-side sum** and to coefficients,
-not to single client inputs or single slots. Fix: pre-scale by `1/K` on the client, or lower `Δ`/raise `q`.
+not to single client inputs or single slots. Fix: keep `Σ(|D_i|/1024)·mean|w|` below `q/(2Δ)`, i.e. shrink the client-side scale factor, lower `Δ`, or raise `q`.
 
 ## License
 

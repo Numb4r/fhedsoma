@@ -344,7 +344,7 @@ Three of these run under CTest when configured with `-DCKKS_BUILD_PYTHON=ON`
 | File | What it tests |
 |------|---------------|
 | `tests/test_stress_federated.py` | `CKKSContext`/`CKKSTensor` at scale: auto-chunking, 100-client FedAvg, serialize, save/load, blind server, K sweep (25 checks) |
-| `tests/test_overflow_federated.py` | Reproduces modular overflow: high-mean vector fails by exactly q/Δ once K·mean > q/(2Δ); zero-mean and single-slot data and client-side 1/K do not (10 checks) |
+| `tests/test_overflow_federated.py` | Reproduces modular overflow: high-mean vector fails by exactly q/Δ once K·mean > q/(2Δ); zero-mean and single-slot data and inputs scaled by 1/K do not (10 checks) |
 | `tests/python/test_poly.py` | `Poly` Python binding: construction, addition, zero-copy view, setter (10 checks) |
 | `test_py_ckks_simplifly.py` | End-to-end encode → encrypt → decrypt → decode; numerical noise verification |
 | `test_py_serialization.py` | `CKKSContext` save/load, ciphertext serialization, homomorphic add after deserialization (6 checks) |

@@ -13,3 +13,4 @@ docs/*.out
 docs/*.toc
 docs/*.loa
 docs/*.lof
+*.bin

@@ -38,8 +38,9 @@ Ignoring them produces silently incorrect results or runtime errors.
   ciphertext × scalar, SIMD rotations, relinearization, key-switching, bootstrapping.
 - A schoolbook `mul_plain` (ciphertext × plaintext) exists in C++ only, is O(N²), and is
   **not exposed to Python**.
-- **Consequence for FedAvg:** the `1/K` averaging divisor must be applied **client-side in
-  plaintext** before encryption.  The server can only call `+=`; it cannot rescale.
+- **Consequence for FedAvg:** clients send their model **state** (not updates) scaled in plaintext
+  by `|D_i|/1024` before encryption.  The server can only call `+=`; it cannot rescale.  The
+  normalisation by `Σ|D_i|/1024` is applied **after decryption**.
 
 ### 2.2 Single modulus, zero multiplicative depth
 
@@ -58,8 +59,8 @@ Every polynomial coefficient must remain `< q/2` after all additions.  With Δ=2
 unscaled additions before overflow  =  q / (2·Δ)  ≈  2^52 / 2^41  =  2048
 ```
 
-**With client-side `1/K` pre-scaling the budget is effectively unlimited** — the aggregate
-coefficient is bounded by Δ regardless of how many clients participate.  Always pre-scale.
+**With the `|D_i|/1024` client scaling the summed polynomial carries `Σ(|D_i|/1024)·w`.**  Keep
+`Σ(|D_i|/1024)·mean|w| < q/(2Δ)` (shrink the scale factor, lower Δ, or raise q) so no coefficient wraps.
 
 ### 2.4 Parameter constraints
 
@@ -196,7 +197,7 @@ ctx = CKKSContext(N=4096, bits=52, scale_bits=40)
 rng = np.random.default_rng(42)
 weights = [rng.uniform(-1.0, 1.0, size=WEIGHT_SIZE) for _ in range(N_CLIENTS)]
 
-inv_k = 1.0 / N_CLIENTS   # ← pre-scaling happens HERE, in plaintext, before encryption
+inv_k = 1.0 / N_CLIENTS   # ← client-side scaling happens HERE, in plaintext (stand-in for |D_i|/1024)
 
 client_tensors = [CKKSTensor(ctx, w * inv_k) for w in weights]
 
@@ -422,7 +423,7 @@ Everything else is derived.
 | 8192 | 60 | 40 | 4096 | 4096 float64 | 524 288 | Very large add. budget |
 
 > ¹ **Unscaled addition budget** = Q / (2·Δ) ≈ 2^bits / 2^(scale_bits+1).
-> With client-side **1/K pre-scaling** this limit never applies — use pre-scaling.
+> The limit applies to the summed coefficients: keep `Σ(|D_i|/1024)·mean|w| < q/(2Δ)`.
 
 **Arrays larger than N/2** are automatically split into multiple ciphertext chunks by
 `CKKSTensor`; `decrypt()` reassembles them transparently.
@@ -438,7 +439,7 @@ Everything else is derived.
 | `add_inplace` silently produces wrong result | Tensors have different chunk counts | Ensure both tensors were created with the same `original_size` / slot layout |
 | `decrypt()` returns values near 0 for all slots | Server-side context has no SK | Use the client-side `ctx` for decryption |
 | Large imaginary parts in low-level decode | Using `Encoder.decode` directly — imaginary is real noise | Use `CKKSTensor` which calls `np.real()`, or discard `.imag` manually |
-| Aggregated result is wildly wrong (not just noisy) | Overflow: K × Δ > q/2 without pre-scaling | Always pre-scale client data by `1/K` before encryption |
+| Aggregated result is wildly wrong (not just noisy) | Overflow: K × Δ > q/2 without pre-scaling | Keep `Σ(\|D_i\|/1024)·mean\|w\|` below `q/(2Δ)` (smaller client scale, lower Δ, or larger q) |
 | `ValueError: (N, q) mismatch` from `add_inplace` | Mixing ciphertexts from different contexts | Use one shared `CKKSContext` per FL round |
 | Non-deterministic failures with fixed seed | `seed=0` used — this is correct (OS entropy) | Set an explicit `seed=1` or similar for reproducible tests |
 
