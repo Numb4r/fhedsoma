@@ -1,5 +1,7 @@
 # fhedsoma
 
+[![DOI](https://zenodo.org/badge/1454037487.svg)](https://doi.org/10.5281/zenodo.24142886)
+
 **fhedsoma** is a C++17 implementation of the CKKS homomorphic encryption scheme with Python
 bindings, built for one job: **summing encrypted model states in Federated
 Learning (FL)**.
