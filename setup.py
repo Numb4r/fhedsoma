@@ -21,6 +21,8 @@ ext_modules = [
 setup(
     name="ckks_federated",
     version="1.0.0",
+    license="MIT",
+    classifiers=["License :: OSI Approved :: MIT License"],
     author="Yuri - UNICAMP",
     description="Motor CKKS de Alta Performance para Aprendizado Federado",
     packages=["ckks_federated"],                  # O pacote de ALTO NÍVEL

@@ -54,3 +54,9 @@ add_test(NAME test_prime_gen COMMAND test_prime_gen)
 add_executable(test_noise ../test_noise.cpp)
 target_link_libraries(test_noise PRIVATE ckks_core)
 add_test(NAME test_noise COMMAND test_noise)
+
+# Large-scale FL stress test — realistic N ∈ {1024, 4096}, many clients,
+# full slot vectors, and an overflow-boundary sweep (no pre-scaling).
+add_executable(test_stress_aggregation ../test_stress_aggregation.cpp)
+target_link_libraries(test_stress_aggregation PRIVATE ckks_core)
+add_test(NAME test_stress_aggregation COMMAND test_stress_aggregation)

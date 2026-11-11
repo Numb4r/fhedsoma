@@ -85,3 +85,13 @@ endif()
 
 enable_testing()
 add_subdirectory(tests/cpp)
+
+# Python tests (need the compiled extension, so only with CKKS_BUILD_PYTHON=ON)
+if(CKKS_BUILD_PYTHON)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  foreach(t test_stress_federated test_overflow_federated test_precision)
+    add_test(NAME py_${t} COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tests/${t}.py)
+    set_tests_properties(py_${t} PROPERTIES
+      ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:ckks_python>:${CMAKE_SOURCE_DIR}")
+  endforeach()
+endif()
