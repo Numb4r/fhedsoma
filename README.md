@@ -19,6 +19,9 @@ or delta) to a server. With additive HE the server can aggregate those states wi
 3. A client decrypts the sum and **normalises after decryption** (divides by `Σ|D_i|/1024`),
    which gives the weighted FedAvg state.
 
+The `1024` is a public `2^10` factor: it cancels in the normalisation and keeps the weighted sum
+1024 times smaller than `Σ|D_i|·w`, so it stays below `q/(2Δ)`.
+
 The library is specialised for this flow, so it leaves out what FL does not
 need: ciphertext × ciphertext multiplication, rotations, relinearization,
 key-switching, bootstrapping, and modulus chains. It also exposes raw
@@ -44,7 +47,7 @@ polynomial access (`Poly`, zero-copy NumPy views) for research on custom FL prot
 |---|---|
 | Additive only | The server cannot rescale. Clients apply the `|D_i|/1024` weight in plaintext before encrypting; the normalisation by `Σ|D_i|/1024` happens after decryption. |
 | Single modulus, no rescaling | Zero multiplicative depth. |
-| Overflow budget | Each *coefficient* of the summed plaintext polynomial must stay below `q/2`. With `Δ=2^40` and a 52-bit prime that is about `q/(2Δ) = 2048` unscaled additions. The summed polynomial carries `Σ(|D_i|/1024)·w`, so the budget is `Σ(|D_i|/1024)·mean|w| < q/(2Δ)`. |
+| Overflow budget | Each *coefficient* of the summed plaintext polynomial must stay below `q/2`. With `Δ=2^40` and a 52-bit prime that is about `q/(2Δ) = 2048` unscaled additions. The summed polynomial carries `Σ(|D_i|/1024)·w`, so the budget is `Σ(|D_i|/1024)·max|w| < q/(2Δ)` (bounding by `max|w|` is the safe choice, since the mean never exceeds it). |
 | `CKKSTensor.decrypt()` returns real parts only | Use `Encoder.decode()` for complex slots. |
 | Built with `-march=native` | The `.so` is not portable across CPU architectures. Rebuild per machine. |
 | No standard parameter enforcement | You choose `(N, bits)`. `N=4096, bits=52` is the minimum recommended for 128-bit security. `N=1024` is for experiments only. |
@@ -199,7 +202,7 @@ worst case: a constant `v` encodes to the constant polynomial `v·Δ`, so coeffi
 Failure starts exactly where `K·mean` crosses `q/(2Δ)`, and the error is a whole multiple of `q/Δ`
 (after any later rescaling, e.g. dividing by a total weight, it becomes a large constant offset in
 every slot of the affected packet). The limit applies to the **server-side sum** and to coefficients,
-not to single client inputs or single slots. Fix: keep `Σ(|D_i|/1024)·mean|w|` below `q/(2Δ)`, i.e. shrink the client-side scale factor, lower `Δ`, or raise `q`.
+not to single client inputs or single slots. Fix: keep `Σ(|D_i|/1024)·max|w|` below `q/(2Δ)`, i.e. shrink the client-side scale factor, lower `Δ`, or raise `q`.
 
 ## License
 
