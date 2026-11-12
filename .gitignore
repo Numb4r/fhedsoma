@@ -14,3 +14,4 @@ docs/*.toc
 docs/*.loa
 docs/*.lof
 *.bin
+.vscode/
