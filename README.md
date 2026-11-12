@@ -1,6 +1,6 @@
 # fhedsoma
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24142887.svg)](https://doi.org/10.5281/zenodo.24142887)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24142886.svg)](https://doi.org/10.5281/zenodo.24142886)
 
 **fhedsoma** is a C++17 implementation of the CKKS homomorphic encryption scheme with Python
 bindings, built for one job: **summing encrypted model states in Federated
@@ -225,7 +225,9 @@ not to single client inputs or single slots. Fix: keep `Σ(|D_i|/1024)·mean|w|`
 
 ## Citation
 
-If you use fhedsoma, cite the Zenodo release: DOI
+If you use fhedsoma, cite it with the Zenodo DOI
+[10.5281/zenodo.24142886](https://doi.org/10.5281/zenodo.24142886), which covers all versions.
+The DOI of release 1.0 alone is
 [10.5281/zenodo.24142887](https://doi.org/10.5281/zenodo.24142887). Citation metadata is in
 [`CITATION.cff`](CITATION.cff).
 

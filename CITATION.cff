@@ -3,12 +3,12 @@ message: "If you use this software, please cite it as below."
 type: software
 title: "FHEdSoma: Single-Prime CKKS for Encrypted Federated Aggregation"
 authors:
-  - given-names: "Yuri Dimitre"
-    family-names: "Dias de Faria"
+  - given-names: "Yuri Dimitre Dias"
+    family-names: "de Faria"
     affiliation: "Institute of Computing, University of Campinas"
     orcid: "https://orcid.org/0009-0009-3972-8449"
 version: "1.0"
-doi: 10.5281/zenodo.24142887
+doi: 10.5281/zenodo.24142886
 date-released: 2026-11-11
 license: MIT
 repository-code: "https://github.com/Numb4r/fhedsoma"
