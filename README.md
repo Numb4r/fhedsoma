@@ -49,7 +49,7 @@ polynomial access (`Poly`, zero-copy NumPy views) for research on custom FL prot
 |---|---|
 | Additive only | The server cannot rescale. Clients apply the `|D_i|/1024` weight in plaintext before encrypting; the normalisation by `Σ|D_i|/1024` happens after decryption. |
 | Single modulus, no rescaling | Zero multiplicative depth. |
-| Overflow budget | Each *coefficient* of the summed plaintext polynomial must stay below `q/2`. With `Δ=2^40` and a 52-bit prime that is about `q/(2Δ) = 2048` unscaled additions. The summed polynomial carries `Σ(|D_i|/1024)·w`, so the budget is `Σ(|D_i|/1024)·max|w| < q/(2Δ)` (bounding by `max|w|` is the safe choice, since the mean never exceeds it). |
+| Overflow budget | Each *coefficient* of the summed plaintext polynomial must stay below `q/2`. The summed polynomial carries `Σ(|D_i|/1024)·w`, and each decoded coefficient is bounded by the mean slot magnitude, so the actual limit is `Σ(|D_i|/1024)·mean|w| < q/(2Δ)` (mean over the `N/2` slots of each ciphertext). Requiring every slot to stay below `q/(2Δ)`, i.e. `Σ(|D_i|/1024)·max|w| < q/(2Δ)`, is a sufficient and more conservative condition. With `Δ=2^40` and a 52-bit prime, `q/(2Δ) ≈ 2048`. |
 | `CKKSTensor.decrypt()` returns real parts only | Use `Encoder.decode()` for complex slots. |
 | Built with `-march=native` | The `.so` is not portable across CPU architectures. Rebuild per machine. |
 | No standard parameter enforcement | You choose `(N, bits)`. `N=4096, bits=52` is the minimum recommended for 128-bit security. `N=1024` is for experiments only. |
@@ -204,7 +204,7 @@ worst case: a constant `v` encodes to the constant polynomial `v·Δ`, so coeffi
 Failure starts exactly where `K·mean` crosses `q/(2Δ)`, and the error is a whole multiple of `q/Δ`
 (after any later rescaling, e.g. dividing by a total weight, it becomes a large constant offset in
 every slot of the affected packet). The limit applies to the **server-side sum** and to coefficients,
-not to single client inputs or single slots. Fix: keep `Σ(|D_i|/1024)·max|w|` below `q/(2Δ)`, i.e. shrink the client-side scale factor, lower `Δ`, or raise `q`.
+not to single client inputs or single slots. Fix: keep `Σ(|D_i|/1024)·mean|w|` below `q/(2Δ)` (keeping `Σ(|D_i|/1024)·max|w|` below it is sufficient and more conservative), i.e. shrink the client-side scale factor, lower `Δ`, or raise `q`.
 
 ## License
 
