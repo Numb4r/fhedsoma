@@ -49,11 +49,24 @@ polynomial access (`Poly`, zero-copy NumPy views) for research on custom FL prot
 |---|---|
 | Additive only | The server cannot rescale. Clients apply the `|D_i|/1024` weight in plaintext before encrypting; the normalisation by `Σ|D_i|/1024` happens after decryption. |
 | Single modulus, no rescaling | Zero multiplicative depth. |
-| Overflow budget | Each *coefficient* of the summed plaintext polynomial must stay below `q/2`. The summed polynomial carries `Σ(|D_i|/1024)·w`, and each decoded coefficient is bounded by the mean slot magnitude, so the actual limit is `Σ(|D_i|/1024)·mean|w| < q/(2Δ)` (mean over the `N/2` slots of each ciphertext). Requiring every slot to stay below `q/(2Δ)`, i.e. `Σ(|D_i|/1024)·max|w| < q/(2Δ)`, is a sufficient and more conservative condition. With `Δ=2^40` and a 52-bit prime, `q/(2Δ) ≈ 2048`. |
+| Overflow budget | Each *coefficient* of the summed plaintext polynomial must stay below `q/2`. The summed polynomial carries `Σ(|D_i|/1024)·w`, and each decoded coefficient is bounded by the mean slot magnitude, so the actual limit is `Σ(|D_i|/1024)·mean|w| < q/(2Δ)` (mean over the `N/2` slots of each ciphertext). Requiring every slot to stay below `q/(2Δ)`, i.e. `Σ(|D_i|/1024)·max|w| < q/(2Δ)`, is a sufficient and more conservative condition. With `Δ=2^40`, `q/(2Δ) ≈ 2048` for a 52-bit prime and just below `2^21` for the 62-bit prime used in the paper. |
 | `CKKSTensor.decrypt()` returns real parts only | Use `Encoder.decode()` for complex slots. |
 | Built with `-march=native` | The `.so` is not portable across CPU architectures. Rebuild per machine. |
 | No standard parameter enforcement | You choose `(N, bits)`. `N=4096, bits=52` is the minimum recommended for 128-bit security. `N=1024` is for experiments only. |
 | Secret key handling | Never send `sk` to the server. Use `ctx.make_public()` or `CKKSContext.load(path, public_only=True)` there. |
+
+### Configuration used in the SweepFL paper
+
+The SweepFL paper (Computer Networks) uses `N = 8192`, a single 62-bit prime and `Δ = 2^40`:
+
+```python
+ctx = CKKSContext(N=8192, bits=62, scale_bits=40)
+# q = generate_prime(62, 8192) = 4611686018427322369
+# q/(2Δ) = 2097151.99999997..., just below 2^21
+```
+
+`CKKSContext` has no default prime: `bits` is a required argument. The examples below and the
+tests behind the results section use 52-bit primes (`q/(2Δ) ≈ 2048`), not the paper configuration.
 
 ## Project structure
 
@@ -165,6 +178,10 @@ python3 test_py_ckks_simplifly.py && python3 test_py_serialization.py
 
 Measured on this machine (Linux, Python 3.10, `-march=native`) by running the commands above.
 All 17 CTest suites pass (14 C++, 3 Python). Errors are the maximum absolute error per slot against the plaintext result.
+
+**These numbers come from 52-bit primes** (`generate_prime(52, N)` or `15·2^48+1`), except
+`test_precision`, which uses `N=16` and `q = 2^62 − 57`. None of them uses the paper
+configuration (`N=8192`, 62-bit prime, see above).
 
 | Experiment | Setup | Max error |
 |---|---|---|
