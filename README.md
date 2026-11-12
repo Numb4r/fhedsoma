@@ -1,6 +1,6 @@
 # fhedsoma
 
-[![DOI](https://zenodo.org/badge/1454037487.svg)](https://doi.org/10.5281/zenodo.24142886)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24142887.svg)](https://doi.org/10.5281/zenodo.24142887)
 
 **fhedsoma** is a C++17 implementation of the CKKS homomorphic encryption scheme with Python
 bindings, built for one job: **summing encrypted model states in Federated
@@ -222,6 +222,12 @@ Failure starts exactly where `K·mean` crosses `q/(2Δ)`, and the error is a who
 (after any later rescaling, e.g. dividing by a total weight, it becomes a large constant offset in
 every slot of the affected packet). The limit applies to the **server-side sum** and to coefficients,
 not to single client inputs or single slots. Fix: keep `Σ(|D_i|/1024)·mean|w|` below `q/(2Δ)` (keeping `Σ(|D_i|/1024)·max|w|` below it is sufficient and more conservative), i.e. shrink the client-side scale factor, lower `Δ`, or raise `q`.
+
+## Citation
+
+If you use fhedsoma, cite the Zenodo release: DOI
+[10.5281/zenodo.24142887](https://doi.org/10.5281/zenodo.24142887). Citation metadata is in
+[`CITATION.cff`](CITATION.cff).
 
 ## License
 
